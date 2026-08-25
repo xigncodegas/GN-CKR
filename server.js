@@ -541,6 +541,116 @@ app.post('/api/admin/password-reset-requests/:id/acknowledge', requireAuth, requ
   }
 });
 
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  const query = String(req.query.query || '').trim();
+  if (query.length > 64) return res.status(400).json({ error: 'คำค้นหายาวเกินไป' });
+  try {
+    const result = await pool.query(
+      `SELECT u.id, u.username, u.role, u.points,
+              cr.expires_at AS "cookieRunExpiresAt", cr.plan AS "cookieRunPlan", cr.max_devices AS "cookieRunMaxDevices",
+              sv.expires_at AS "suvipExpiresAt",
+              COALESCE((SELECT jsonb_agg(entitlement_key ORDER BY entitlement_key) FROM (
+                SELECT pe.entitlement_key FROM permanent_entitlements pe WHERE pe.user_id = u.id
+                UNION
+                SELECT e.entitlement_key FROM entitlements e WHERE e.user_id = u.id AND e.plan = 'permanent'
+              ) permanent_keys), '[]'::jsonb) AS "permanentEntitlements"
+       FROM users u
+       LEFT JOIN LATERAL (
+         SELECT e.expires_at, e.plan, e.max_devices FROM entitlements e
+         WHERE e.user_id = u.id AND e.entitlement_key = 'cookie-run-farm-vip'
+         ORDER BY e.expires_at DESC LIMIT 1
+       ) cr ON true
+       LEFT JOIN LATERAL (
+         SELECT e.expires_at FROM entitlements e
+         WHERE e.user_id = u.id AND e.entitlement_key = 'suvip'
+         ORDER BY e.expires_at DESC LIMIT 1
+       ) sv ON true
+       WHERE ($1 = '' OR u.username ILIKE '%' || $1 || '%')
+       ORDER BY u.username ASC`,
+      [query]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('ค้นหาสมาชิกไม่สำเร็จ');
+    res.status(500).json({ error: 'ค้นหาสมาชิกไม่สำเร็จ' });
+  }
+});
+
+app.post('/api/admin/users/:username/points', requireAuth, requireAdmin, async (req, res) => {
+  const amount = Number(req.body?.amount);
+  const reason = String(req.body?.reason || '').trim();
+  if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 100000000) {
+    return res.status(400).json({ error: 'จำนวนพอยท์ต้องเป็นจำนวนเต็มที่ไม่เป็นศูนย์' });
+  }
+  if (!reason || reason.length > 500) return res.status(400).json({ error: 'กรุณาระบุเหตุผลไม่เกิน 500 ตัวอักษร' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE users SET points = points + $1 WHERE username = $2 AND points + $1 >= 0
+       RETURNING id, username, points`, [amount, req.params.username]
+    );
+    if (!result.rowCount) {
+      await client.query('ROLLBACK');
+      const exists = await pool.query('SELECT 1 FROM users WHERE username = $1', [req.params.username]);
+      return res.status(exists.rowCount ? 400 : 404).json({ error: exists.rowCount ? 'พอยท์ต้องไม่ติดลบ' : 'ไม่พบสมาชิก' });
+    }
+    await client.query('COMMIT');
+    await writeAudit(result.rows[0].id, 'admin_points_adjust', { adminUsername: req.user.sub, targetUsername: result.rows[0].username, amount, reason });
+    res.json({ ok: true, username: result.rows[0].username, points: result.rows[0].points });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'ปรับพอยท์ไม่สำเร็จ' });
+  } finally { client.release(); }
+});
+
+app.post('/api/admin/users/:username/entitlements/:key/adjust-days', requireAuth, requireAdmin, async (req, res) => {
+  const key = String(req.params.key || '');
+  const days = Number(req.body?.days);
+  const reason = String(req.body?.reason || '').trim();
+  if (!['cookie-run-farm-vip', 'suvip'].includes(key)) return res.status(400).json({ error: 'ไม่อนุญาตให้ปรับสิทธิ์ประเภทนี้' });
+  if (!Number.isInteger(days) || days === 0 || Math.abs(days) > 3650) return res.status(400).json({ error: 'จำนวนวันต้องเป็นจำนวนเต็มที่ไม่เป็นศูนย์' });
+  if (!reason || reason.length > 500) return res.status(400).json({ error: 'กรุณาระบุเหตุผลไม่เกิน 500 ตัวอักษร' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const userResult = await client.query('SELECT id, username, rentals FROM users WHERE username = $1 FOR UPDATE', [req.params.username]);
+    if (!userResult.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสมาชิก' }); }
+    const user = userResult.rows[0];
+    const entitlementResult = await client.query(
+      `SELECT id, plan, expires_at AS "expiresAt" FROM entitlements
+       WHERE user_id = $1 AND entitlement_key = $2 ORDER BY expires_at DESC NULLS LAST LIMIT 1 FOR UPDATE`, [user.id, key]
+    );
+    const existing = entitlementResult.rows[0];
+    const current = existing?.expiresAt ? new Date(existing.expiresAt).getTime() : Number((user.rentals || {})[key]);
+    const base = Number.isFinite(current) && current > Date.now() ? current : Date.now();
+    const newExpiresAt = Math.max(Date.now(), base + days * 86400000);
+    const plan = existing?.plan || (key === 'cookie-run-farm-vip' ? '24h' : 'suvip');
+    const maxDevices = key === 'cookie-run-farm-vip' && plan === '30d' ? 5 : key === 'suvip' ? 3 : 1;
+    if (existing) {
+      await client.query('UPDATE entitlements SET expires_at = to_timestamp($1::double precision / 1000), max_devices = $2 WHERE id = $3', [newExpiresAt, maxDevices, existing.id]);
+    } else {
+      await client.query(
+        `INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+         VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000), $5)`, [user.id, key, plan, newExpiresAt, maxDevices]
+      );
+    }
+    await client.query(
+      `UPDATE users SET rentals = jsonb_set(COALESCE(rentals, '{}'::jsonb), $1, to_jsonb($2::bigint)) WHERE id = $3`,
+      [`{${key}}`, newExpiresAt, user.id]
+    );
+    if (newExpiresAt <= Date.now()) {
+      await client.query('DELETE FROM active_leases WHERE user_id = $1 AND entitlement_key = $2', [user.id, key]);
+    }
+    await client.query('COMMIT');
+    await writeAudit(user.id, 'admin_entitlement_adjust_days', { adminUsername: req.user.sub, targetUsername: user.username, entitlementKey: key, days, reason });
+    res.json({ ok: true, username: user.username, key, expiresAt: newExpiresAt });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'ปรับวันหมดอายุไม่สำเร็จ' });
+  } finally { client.release(); }
+});
+
 // ------------------------------------------------------------------
 // GET /api/packages — รายการแพ็กเกจเติมพอยท์ (ต้องล็อกอินก่อนถึงจะดูได้)
 // ------------------------------------------------------------------

@@ -120,6 +120,9 @@ Flow ตอนนี้เป็นแบบนี้:
 | GET    | `/api/admin/topups` | ✅ (admin) | รายการคำขอเติมพอยท์ที่รอตรวจสอบ (`?status=all` ดูทุกสถานะ) |
 | GET    | `/api/admin/password-reset-requests` | ✅ (admin) | ดูคำขอลืมรหัสผ่านทั้งหมด |
 | POST   | `/api/admin/password-reset-requests/:id/acknowledge` | ✅ (admin) | กดรับเรื่องคำขอลืมรหัสผ่าน |
+| GET    | `/api/admin/users?query=` | ✅ (admin) | ค้นหาสมาชิกและดูพอยท์/entitlements |
+| POST   | `/api/admin/users/:username/points` | ✅ (admin) | ปรับพอยท์ด้วย `{ amount, reason }` โดยพอยท์ห้ามติดลบ |
+| POST   | `/api/admin/users/:username/entitlements/:key/adjust-days` | ✅ (admin) | ปรับวัน CookieRun/SUVIP ด้วย `{ days, reason }` |
 | POST   | `/api/admin/topups/:id/approve` | ✅ (admin) | อนุมัติคำขอ เพิ่มพอยท์ให้ผู้ใช้จริง |
 | POST   | `/api/admin/topups/:id/reject`  | ✅ (admin) | ปฏิเสธคำขอ รับ `{ reason }` เสริมได้ |
 | GET    | `/api/admin/ping`| ✅ (admin เท่านั้น) | ตัวอย่าง route เฉพาะแอดมิน |

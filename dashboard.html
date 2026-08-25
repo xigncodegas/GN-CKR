@@ -27,6 +27,7 @@
     <button class="nav-btn" data-panel="topup"><span class="ic">💎</span> เติมพอยท์</button>
     <button class="nav-btn" id="nav-admin-topups" data-panel="admin-topups" style="display:none;"><span class="ic">🧾</span> ตรวจสอบการเติมพอยท์</button>
     <button class="nav-btn" id="nav-admin-resets" data-panel="admin-resets" style="display:none;"><span class="ic">🔑</span> คำขอลืมรหัสผ่าน</button>
+    <button class="nav-btn" id="nav-admin-users" data-panel="admin-users" style="display:none;"><span class="ic">👥</span> จัดการสมาชิก</button>
     <button class="nav-btn" id="side-contact-admin"><span class="ic">💬</span> ติดต่อแอดมิน</button>
     <div class="nav-spacer"></div>
     <button class="nav-btn logout" id="btn-logout"><span class="ic">↩</span> ออกจากระบบ</button>
@@ -132,7 +133,27 @@
       <div class="section-title"><span class="dash"></span>คำขอลืมรหัสผ่าน</div>
       <div id="admin-reset-list" style="display:flex; flex-direction:column; gap:14px;"><div class="svc-desc">กำลังโหลด...</div></div>
     </div>
+
+    <div class="panel" id="panel-admin-users">
+      <div class="section-title"><span class="dash"></span>จัดการสมาชิก</div>
+      <div class="admin-search"><input type="text" id="admin-user-query" placeholder="ค้นหาชื่อ user"><button type="button" class="btn-primary" id="admin-user-search">ค้นหา</button></div>
+      <div id="admin-user-list" class="admin-user-list"><div class="svc-desc">กรอกคำค้นหา หรือกดค้นหาเพื่อดูสมาชิกทั้งหมด</div></div>
+    </div>
   </main>
+</div>
+
+<div class="modal-overlay" id="modal-admin-action">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-admin-action')">✕</button>
+    <h3 id="admin-action-title">จัดการสมาชิก</h3>
+    <p class="modal-sub" id="admin-action-subtitle"></p>
+    <form id="admin-action-form">
+      <div class="field"><label for="admin-action-amount" id="admin-action-amount-label">จำนวน</label><input type="number" id="admin-action-amount" required></div>
+      <div class="field"><label for="admin-action-reason">เหตุผล</label><textarea id="admin-action-reason" required maxlength="500" placeholder="ระบุเหตุผลการแก้ไข"></textarea></div>
+      <p id="admin-action-error" class="form-error"></p>
+      <button class="btn-primary" type="submit" id="admin-action-submit">ยืนยัน</button>
+    </form>
+  </div>
 </div>
 
 <!-- ============ MODAL: PromptPay QR + แนบสลิป ============ -->
@@ -259,6 +280,7 @@
     document.getElementById('chip-label').textContent = u.role === 'admin' ? 'สิทธิ์แอดมิน + พอยท์' : 'พอยท์คงเหลือ';
     document.getElementById('nav-admin-topups').style.display = u.role === 'admin' ? '' : 'none';
     document.getElementById('nav-admin-resets').style.display = u.role === 'admin' ? '' : 'none';
+    document.getElementById('nav-admin-users').style.display = u.role === 'admin' ? '' : 'none';
   }
   renderUser(currentUser);
 
@@ -287,6 +309,7 @@
     });
     if (name === 'admin-topups') loadAdminTopups();
     if (name === 'admin-resets') loadAdminResets();
+    if (name === 'admin-users') loadAdminUsers();
   }
   document.querySelectorAll('.nav-btn[data-panel]').forEach(b => {
     b.addEventListener('click', () => switchPanel(b.dataset.panel));
@@ -483,6 +506,82 @@
       });
     } catch (e) { /* handled by apiFetch redirect */ }
   }
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
+  }
+
+  function adminDate(value) {
+    return value ? new Date(value).toLocaleString('th-TH') : '-';
+  }
+
+  async function loadAdminUsers() {
+    if (currentUser.role !== 'admin') return;
+    const box = document.getElementById('admin-user-list');
+    const query = document.getElementById('admin-user-query').value.trim();
+    box.innerHTML = '<div class="svc-desc">กำลังโหลดสมาชิก...</div>';
+    try {
+      const res = await apiFetch('/api/admin/users?query=' + encodeURIComponent(query));
+      const users = await res.json();
+      if (!res.ok) { box.innerHTML = `<div class="form-error show">${escapeHtml(users.error || 'โหลดสมาชิกไม่สำเร็จ')}</div>`; return; }
+      if (!users.length) { box.innerHTML = '<div class="svc-desc">ไม่พบสมาชิก</div>'; return; }
+      box.innerHTML = users.map(user => `
+        <article class="admin-user-card" data-admin-username="${escapeHtml(user.username)}">
+          <div class="admin-user-head"><div><div class="admin-user-name">${escapeHtml(user.username)}</div><div class="admin-user-role">${escapeHtml(user.role)}</div></div><strong class="service-price">${Number(user.points).toLocaleString()} PT</strong></div>
+          <div class="admin-user-grid">
+            <div class="admin-user-field"><span>CookieRun VIP</span><strong>${adminDate(user.cookieRunExpiresAt)}</strong></div>
+            <div class="admin-user-field"><span>แผน / จำนวนจอ</span><strong>${escapeHtml(user.cookieRunPlan || '-')} / ${user.cookieRunMaxDevices || '-'} จอ</strong></div>
+            <div class="admin-user-field"><span>SUVIP</span><strong>${adminDate(user.suvipExpiresAt)}</strong></div>
+            <div class="admin-user-field"><span>สิทธิ์ถาวร</span><strong>${user.permanentEntitlements?.length ? user.permanentEntitlements.map(escapeHtml).join(', ') : '-'}</strong></div>
+          </div>
+          <div class="admin-user-actions">
+            <button type="button" data-action="points">เพิ่ม/ลดพอยท์</button>
+            <button type="button" data-action="cookie-run-farm-vip">ต่ออายุ/ลดวัน CookieRun</button>
+            <button type="button" data-action="suvip">ต่ออายุ/ลดวัน SUVIP</button>
+          </div>
+        </article>`).join('');
+      box.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => openAdminAction(button.closest('[data-admin-username]').dataset.adminUsername, button.dataset.action)));
+    } catch (e) { if (e.message !== 'unauthorized') box.innerHTML = '<div class="form-error show">เชื่อมต่อเซิร์ฟเวอร์ไม่ได้</div>'; }
+  }
+
+  let adminAction = null;
+  function openAdminAction(username, action) {
+    adminAction = { username, action };
+    const isPoints = action === 'points';
+    document.getElementById('admin-action-title').textContent = isPoints ? 'เพิ่ม/ลดพอยท์' : 'ปรับวันหมดอายุ';
+    document.getElementById('admin-action-subtitle').textContent = `${username} · ${isPoints ? 'ใส่จำนวนติดลบเพื่อหักพอยท์' : action === 'suvip' ? 'สิทธิ์ SUVIP' : 'สิทธิ์ CookieRun Farm VIP'}`;
+    document.getElementById('admin-action-amount-label').textContent = isPoints ? 'จำนวนพอยท์ (+/-)' : 'จำนวนวัน (+/-)';
+    document.getElementById('admin-action-amount').value = '';
+    document.getElementById('admin-action-reason').value = '';
+    document.getElementById('admin-action-error').classList.remove('show');
+    openModal('modal-admin-action');
+  }
+
+  document.getElementById('admin-user-search').addEventListener('click', loadAdminUsers);
+  document.getElementById('admin-user-query').addEventListener('keydown', event => { if (event.key === 'Enter') loadAdminUsers(); });
+  document.getElementById('admin-action-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!adminAction) return;
+    const amount = Number(document.getElementById('admin-action-amount').value);
+    const reason = document.getElementById('admin-action-reason').value.trim();
+    const error = document.getElementById('admin-action-error');
+    const button = document.getElementById('admin-action-submit');
+    if (!Number.isInteger(amount) || amount === 0 || !reason) { error.textContent = 'กรุณากรอกจำนวนเต็มที่ไม่เป็นศูนย์และเหตุผล'; error.classList.add('show'); return; }
+    button.disabled = true;
+    try {
+      const path = adminAction.action === 'points'
+        ? `/api/admin/users/${encodeURIComponent(adminAction.username)}/points`
+        : `/api/admin/users/${encodeURIComponent(adminAction.username)}/entitlements/${encodeURIComponent(adminAction.action)}/adjust-days`;
+      const res = await apiFetch(path, { method: 'POST', body: JSON.stringify({ [adminAction.action === 'points' ? 'amount' : 'days']: amount, reason }) });
+      const data = await res.json();
+      if (!res.ok) { error.textContent = data.error || 'ทำรายการไม่สำเร็จ'; error.classList.add('show'); return; }
+      closeModal('modal-admin-action');
+      showToast('บันทึกการจัดการสมาชิกแล้ว');
+      loadAdminUsers();
+      refreshMe();
+    } catch (e) { error.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'; error.classList.add('show'); }
+    finally { button.disabled = false; }
+  });
 
   async function reviewTopup(topupId, action, btn) {
     btn.disabled = true;

@@ -165,6 +165,22 @@ form input:focus{ border-color:var(--border-hi); box-shadow:0 0 0 3px rgba(0,229
 .entitlement-summary h2{ margin:4px 0; font-family:'Kanit',sans-serif; font-size:22px; }
 .entitlement-summary p{ margin:0; color:var(--text-dim); }
 .entitlement-action{ width:auto; min-width:150px; }
+.admin-search{ display:flex; gap:10px; margin-bottom:16px; }
+.admin-search input{ flex:1; min-width:0; padding:12px 14px; border-radius:10px; background:#0e0e18; border:1px solid var(--border); color:var(--text); font:14px 'Sarabun',sans-serif; outline:none; }
+.admin-search input:focus{ border-color:var(--border-hi); box-shadow:0 0 0 3px rgba(0,229,199,0.12); }
+.admin-search .btn-primary{ width:auto; padding:10px 22px; }
+.admin-user-list{ display:grid; gap:12px; }
+.admin-user-card{ background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px; }
+.admin-user-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; }
+.admin-user-name{ font:600 17px 'Kanit',sans-serif; }
+.admin-user-role{ color:var(--cyan); font-size:12px; }
+.admin-user-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:14px; }
+.admin-user-field{ background:rgba(10,10,18,0.45); border:1px solid var(--border); border-radius:9px; padding:10px; min-width:0; }
+.admin-user-field span{ display:block; color:var(--text-dim); font-size:11px; margin-bottom:3px; }
+.admin-user-field strong{ display:block; font:600 13px 'Kanit',sans-serif; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.admin-user-actions{ display:flex; flex-wrap:wrap; gap:8px; }
+.admin-user-actions button{ padding:8px 11px; border:1px solid var(--border-hi); border-radius:8px; background:rgba(0,229,199,0.08); color:var(--cyan); cursor:pointer; font:600 12px 'Kanit',sans-serif; }
+.admin-user-actions button:hover{ background:rgba(0,229,199,0.16); }
 
 .panel{ display:none; }
 .panel.active{ display:block; }
@@ -302,4 +318,8 @@ form input:focus{ border-color:var(--border-hi); box-shadow:0 0 0 3px rgba(0,229
   .license-foot{ flex-direction:column; gap:4px; }
   .entitlement-summary{ align-items:flex-start; flex-direction:column; padding:18px; }
   .entitlement-action{ width:100%; }
+  .admin-search{ flex-direction:column; }
+  .admin-search .btn-primary{ width:100%; }
+  .admin-user-grid{ grid-template-columns:repeat(2,1fr); }
+  .admin-user-head{ flex-direction:column; }
 }
