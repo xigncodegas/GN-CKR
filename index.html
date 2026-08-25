@@ -55,7 +55,7 @@
     <h3>สมัครสมาชิกใหม่</h3>
     <p class="modal-sub">สร้างบัญชีสมาชิกเพื่อเริ่มใช้งานบริการ</p>
     <form id="register-form">
-      <div class="field"><label for="register-username">ชื่อผู้ใช้</label><input id="register-username" required autocomplete="username"></div>
+      <div class="field"><label for="register-username">ชื่อผู้ใช้</label><input type="text" id="register-username" placeholder="กรอกชื่อผู้ใช้" required autocomplete="username"></div>
       <div class="field"><label for="register-password">รหัสผ่าน</label><input type="password" id="register-password" required minlength="8" autocomplete="new-password"></div>
       <p id="register-error" class="form-error"></p>
       <button class="btn-primary" type="submit" id="register-btn">สมัครสมาชิก</button>
@@ -69,8 +69,8 @@
     <h3>ลืมรหัสผ่าน</h3>
     <p class="modal-sub">กรอกข้อมูลให้แอดมินติดต่อกลับเพื่อดำเนินการ</p>
     <form id="forgot-form">
-      <div class="field"><label for="forgot-username">ชื่อผู้ใช้</label><input id="forgot-username" required></div>
-      <div class="field"><label for="forgot-contact">ช่องทางติดต่อ</label><input id="forgot-contact" placeholder="เช่น Line ID, Discord หรืออีเมล" required maxlength="300"></div>
+      <div class="field"><label for="forgot-username">ชื่อผู้ใช้</label><input type="text" id="forgot-username" placeholder="กรอกชื่อผู้ใช้" required></div>
+      <div class="field"><label for="forgot-contact">ช่องทางติดต่อ</label><input type="text" id="forgot-contact" placeholder="เช่น Line ID, Discord หรืออีเมล" required maxlength="300"></div>
       <p id="forgot-error" class="form-error"></p>
       <button class="btn-primary" type="submit" id="forgot-btn">ส่งคำขอ</button>
     </form>
