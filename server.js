@@ -151,7 +151,7 @@ const SERVICES = [
   { id: 'cookie-run-farm-vip', name: 'CookieRun Farm VIP', icon: '🚀', description: 'เครื่องมือช่วยเพิ่มความสะดวกระหว่างเล่น รองรับการตั้งค่าพื้นฐาน', cost: 20, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
   { id: 'svc-b', name: 'เช่ายศ SUVIP', icon: '🛰️', description: 'ยศ SUVIP สำหรับเพิ่มสิทธิ์การใช้งาน CookieRun Farm VIP', cost: 35, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
   { id: 'svc-c', name: 'ซื้อโปรแกรมช่วยเล่นถาวร', icon: '🧠', description: 'ซื้อครั้งเดียว ใช้งานได้ถาวรตลอดอายุบัญชี', cost: 3000, permanent: true, available: true },
-  { id: 'svc-vip', name: 'แพ็กเกจสมาชิก VIP', icon: '🎯', description: 'ปลดล็อกสิทธิพิเศษและบริการทั้งหมดในที่เดียว', cost: 80, durationMs: 7 * 24 * 60 * 60 * 1000, durationLabel: '7 วัน', available: true },
+  { id: 'svc-vip', name: 'แพ็กเกจสมาชิก VIP / SUVIP 30 วัน', icon: '🎯', description: 'VIP / SUVIP · 30 วัน · ใช้ได้สูงสุด 5 จอ', cost: 900, durationMs: 30 * 24 * 60 * 60 * 1000, durationLabel: '30 วัน', available: true, cookieRunBundle: true },
 ];
 
 function formatRemaining(ms) {
@@ -173,6 +173,10 @@ function getCookieRunScreenLimit(rentals, membershipTier) {
   const durationDays = Number((rentals || {})['cookie-run-farm-vip-duration-days']);
   if (plan === '30d' || durationDays === 30) return 5;
   return membershipTier === 'SUVIP' ? 3 : 1;
+}
+
+function getCookieRunPlan(rentals) {
+  return (rentals || {})['cookie-run-farm-vip-plan'] === '30d' ? '30d' : '24h';
 }
 
 // ------------------------------------------------------------------
@@ -369,7 +373,9 @@ app.get('/api/services', requireAuth, async (req, res) => {
   const now = Date.now();
   const list = SERVICES.map((svc) => {
     const owned = svc.id === 'svc-c' && user.permanentProgramOwned;
-    const rentalKey = svc.id === 'svc-b' ? 'suvip' : svc.id;
+    const rentalKey = svc.cookieRunBundle
+      ? 'cookie-run-farm-vip'
+      : svc.id === 'svc-b' ? 'suvip' : svc.id;
     const expiresAt = (user.rentals || {})[rentalKey];
     const rented = expiresAt && expiresAt > now;
     return {
@@ -399,12 +405,17 @@ app.get('/api/license/cookie-run-farm-vip', requireAuth, async (req, res) => {
     const expiresAt = Number(rentals['cookie-run-farm-vip']) || null;
     const membership = getMembership(rentals, serverTime);
     if (expiresAt && expiresAt > serverTime) {
+      const plan = getCookieRunPlan(rentals);
+      const membershipTier = membership.membershipTier === 'SUVIP' ? 'suvip' : 'standard';
+      const maxDevices = getCookieRunScreenLimit(rentals, membership.membershipTier);
       return res.json({
         authorized: true,
-        membershipTier: membership.membershipTier,
+        plan,
+        membershipTier,
         expiresAt,
         suvipExpiresAt: membership.suvipExpiresAt,
-        maxScreens: getCookieRunScreenLimit(rentals, membership.membershipTier),
+        maxDevices,
+        maxScreens: maxDevices,
         serverTime,
       });
     }
@@ -598,6 +609,55 @@ app.post('/api/rent', requireAuth, async (req, res) => {
       await client.query('ROLLBACK');
       console.error('ซื้อโปรแกรมถาวรไม่สำเร็จ:', err);
       return res.status(500).json({ error: 'ซื้อโปรแกรมไม่สำเร็จ กรุณาลองใหม่' });
+    } finally {
+      client.release();
+    }
+  }
+
+  if (svc.cookieRunBundle) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+      const rentals = user.rentals || {};
+      const now = Date.now();
+      const currentExpiry = Number(rentals['cookie-run-farm-vip']) > now
+        ? Number(rentals['cookie-run-farm-vip'])
+        : now;
+      const expiresAt = currentExpiry + svc.durationMs;
+      const updated = await client.query(
+        `UPDATE users SET points = points - $1,
+          rentals = jsonb_set(
+            jsonb_set(
+              jsonb_set(COALESCE(rentals, '{}'::jsonb), '{cookie-run-farm-vip}', to_jsonb($2::bigint)),
+              '{cookie-run-farm-vip-plan}', '"30d"'::jsonb
+            ),
+            '{cookie-run-farm-vip-duration-days}', '30'::jsonb
+          )
+         WHERE id = $3 AND points >= $1 RETURNING points`,
+        [svc.cost, expiresAt, user.id]
+      );
+      if (!updated.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'พอยท์ไม่เพียงพอ กรุณาเติมพอยท์ก่อน' });
+      }
+      await client.query(
+        `UPDATE users SET rentals = jsonb_set(rentals, '{suvip}', to_jsonb($1::bigint)) WHERE id = $2`,
+        [expiresAt, user.id]
+      );
+      await client.query('COMMIT');
+      return res.json({
+        points: updated.rows[0].points,
+        serviceId: svc.id,
+        plan: '30d',
+        membershipTier: 'suvip',
+        maxDevices: 5,
+        expiresAt,
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('ซื้อแพ็กเกจ VIP/SUVIP ไม่สำเร็จ:', err);
+      return res.status(500).json({ error: 'ซื้อแพ็กเกจไม่สำเร็จ กรุณาลองใหม่' });
     } finally {
       client.release();
     }
