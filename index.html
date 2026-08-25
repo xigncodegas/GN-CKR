@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AURORA HUB — เข้าสู่ระบบสมาชิก</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;600;700;800&family=Sarabun:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<div class="bg-fx"></div>
+
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand">
+      <div class="core-badge">
+        <svg viewBox="0 0 100 100">
+          <circle class="core-ring" cx="50" cy="50" r="42" stroke-dasharray="6 10"/>
+          <circle class="core-ring rev" cx="50" cy="50" r="32" stroke-dasharray="4 8"/>
+          <circle class="core-dot" cx="50" cy="50" r="7"/>
+        </svg>
+      </div>
+      <h1>AURORA HUB</h1>
+      <p class="tagline">ศูนย์รวมบริการโปรแกรมสำหรับสมาชิก</p>
+    </div>
+
+    <div id="login-error" class="form-error"></div>
+
+    <form id="login-form">
+      <div class="field">
+        <label for="username">ชื่อผู้ใช้</label>
+        <input type="text" id="username" placeholder="กรอกชื่อผู้ใช้" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">รหัสผ่าน</label>
+        <input type="password" id="password" placeholder="กรอกรหัสผ่าน" autocomplete="current-password" required>
+      </div>
+      <div class="row-between">
+        <label><input type="checkbox"> จดจำฉันไว้</label>
+        <a href="#" class="link-muted">ลืมรหัสผ่าน?</a>
+      </div>
+      <button type="submit" class="btn-primary" id="login-btn">เข้าสู่ระบบ</button>
+    </form>
+
+    <button id="btn-contact-admin" class="btn-ghost">💬 ติดต่อแอดมิน</button>
+    <p class="fine-print">ยังไม่มีบัญชี? <a href="#">สมัครสมาชิกใหม่</a></p>
+  </div>
+</div>
+
+<!-- ============ MODAL: contact admin ============ -->
+<div class="modal-overlay" id="modal-contact">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-contact')">✕</button>
+    <h3>ติดต่อแอดมิน</h3>
+    <p class="modal-sub">เลือกช่องทางที่สะดวก หรือฝากข้อความไว้ด้านล่าง</p>
+
+    <a class="contact-row" href="#">
+      <div class="ic">📱</div>
+      <div><div class="t1">Line Official</div><div class="t2">@aurorahub</div></div>
+    </a>
+    <a class="contact-row" href="#">
+      <div class="ic">🎮</div>
+      <div><div class="t1">Discord</div><div class="t2">discord.gg/aurorahub</div></div>
+    </a>
+    <a class="contact-row" href="#">
+      <div class="ic">✉️</div>
+      <div><div class="t1">อีเมล</div><div class="t2">support@aurorahub.example</div></div>
+    </a>
+
+    <label style="font-size:13px; color:var(--text-dim); font-weight:500; display:block; margin-top:16px;">หรือฝากข้อความถึงแอดมิน</label>
+    <textarea id="contact-message" placeholder="พิมพ์ข้อความของคุณที่นี่..."></textarea>
+    <button class="btn-primary" style="margin-top:14px;" onclick="sendMessage()">ส่งข้อความ</button>
+  </div>
+</div>
+
+<div id="page-loader"><div class="spin"></div><div class="lbl">กำลังเข้าสู่ระบบ...</div></div>
+<div id="toast"></div>
+
+<script src="assets/shared.js"></script>
+<script>
+  // ถ้ามี token ที่ยังใช้ได้อยู่แล้ว ข้ามหน้า login ไปเลย
+  if (AuthStore.getToken()) {
+    window.location.href = 'dashboard.html';
+  }
+
+  document.getElementById('btn-contact-admin').addEventListener('click', () => openModal('modal-contact'));
+
+  function sendMessage() {
+    const ta = document.getElementById('contact-message');
+    if (!ta.value.trim()) { showToast('กรุณาพิมพ์ข้อความก่อนส่ง'); return; }
+    ta.value = '';
+    closeModal('modal-contact');
+    showToast('ส่งข้อความถึงแอดมินแล้ว');
+  }
+
+  const form = document.getElementById('login-form');
+  const errBox = document.getElementById('login-error');
+  const loginBtn = document.getElementById('login-btn');
+  const loader = document.getElementById('page-loader');
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errBox.classList.remove('show');
+
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+
+    loginBtn.disabled = true;
+    loginBtn.textContent = 'กำลังตรวจสอบ...';
+
+    try {
+      const res = await fetch(API_BASE_URL + '/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        errBox.textContent = data.error || 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่';
+        errBox.classList.add('show');
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'เข้าสู่ระบบ';
+        return;
+      }
+
+      AuthStore.save(data.token, data.user);
+
+      // เอฟเฟกต์เปลี่ยนหน้าแบบ full-page transition ก่อนเด้งไปหน้า dashboard
+      loader.classList.add('show');
+      setTimeout(() => { window.location.href = 'dashboard.html'; }, 450);
+
+    } catch (err) {
+      errBox.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ตรวจสอบว่า backend รันอยู่ที่ ' + API_BASE_URL;
+      errBox.classList.add('show');
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'เข้าสู่ระบบ';
+    }
+  });
+</script>
+</body>
+</html>
