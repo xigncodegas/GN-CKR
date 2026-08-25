@@ -47,7 +47,7 @@
     <div class="panel active" id="panel-dashboard">
       <div class="stat-grid">
         <div class="stat-card"><div class="k">พอยท์คงเหลือ</div><div class="v gold" id="stat-points">0</div></div>
-        <div class="stat-card"><div class="k">สถานะสมาชิก</div><div class="v cyan" id="stat-role">Standard</div></div>
+        <div class="stat-card"><div class="k">สถานะสมาชิก</div><div class="v cyan" id="stat-role">Standard</div><div class="k" id="stat-role-expiry"></div></div>
         <div class="stat-card"><div class="k">โปรแกรมที่เช่าอยู่</div><div class="v magenta" id="stat-active">0 รายการ</div></div>
       </div>
       <div class="section-title"><span class="dash"></span>ทางลัด</div>
@@ -166,11 +166,20 @@
   let currentUser = AuthStore.getUser() || { username: 'สมาชิก', role: 'member', points: 0 };
   let activeCount = 0;
 
+  function formatRemaining(ms) {
+    const hours = Math.ceil(ms / (60 * 60 * 1000));
+    return hours >= 24 ? Math.ceil(hours / 24) + ' วัน' : hours + ' ชม.';
+  }
+
   function renderUser(u) {
     document.getElementById('greeting').textContent = 'ยินดีต้อนรับ' + (u.role === 'admin' ? 'แอดมิน' : '') + ', ' + u.username;
     document.getElementById('point-balance').textContent = u.points.toLocaleString();
     document.getElementById('stat-points').textContent = u.points.toLocaleString();
-    document.getElementById('stat-role').textContent = u.role === 'admin' ? 'Admin' : 'Standard';
+    const membershipTier = u.role === 'admin' ? 'Admin' : (u.membershipTier || 'Standard');
+    document.getElementById('stat-role').textContent = membershipTier;
+    document.getElementById('stat-role-expiry').textContent = u.suvipExpiresAt && u.suvipExpiresAt > Date.now()
+      ? 'SUVIP เหลือ ' + formatRemaining(u.suvipExpiresAt - Date.now())
+      : '';
     document.getElementById('chip-label').textContent = u.role === 'admin' ? 'สิทธิ์แอดมิน + พอยท์' : 'พอยท์คงเหลือ';
     document.getElementById('nav-admin-topups').style.display = u.role === 'admin' ? '' : 'none';
     document.getElementById('nav-admin-resets').style.display = u.role === 'admin' ? '' : 'none';
@@ -189,6 +198,7 @@
     } catch (e) { /* apiFetch already redirects on 401 */ }
   }
   refreshMe();
+  setInterval(refreshMe, 60 * 1000);
 
   // ---------- navigation ----------
   function switchPanel(name) {
@@ -458,6 +468,10 @@
       const data = await res.json();
       if (!res.ok) { showToast(data.error || 'เช่าโปรแกรมไม่สำเร็จ'); btn.disabled = false; btn.textContent = original; return; }
       currentUser.points = data.points;
+      if (data.membershipTier) {
+        currentUser.membershipTier = data.membershipTier;
+        currentUser.suvipExpiresAt = data.suvipExpiresAt;
+      }
       AuthStore.save(AuthStore.getToken(), currentUser);
       renderUser(currentUser);
       showToast('เช่าโปรแกรมสำเร็จ ใช้ได้ถึง ' + data.expiresLabel);

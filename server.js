@@ -135,7 +135,7 @@ async function buildPromptPayQr(amount) {
 // ------------------------------------------------------------------
 const SERVICES = [
   { id: 'cookie-run-farm-vip', name: 'CookieRun Farm VIP', icon: '🚀', description: 'เครื่องมือช่วยเพิ่มความสะดวกระหว่างเล่น รองรับการตั้งค่าพื้นฐาน', cost: 20, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
-  { id: 'svc-b', name: 'โปรแกรมช่วยเล่น B', icon: '🛰️', description: 'ระบบเสริมสำหรับผู้ใช้ระดับกลาง มีการอัปเดตสม่ำเสมอ', cost: 35, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
+  { id: 'svc-b', name: 'เช่ายศ SUVIP', icon: '🛰️', description: 'ยศ SUVIP สำหรับเพิ่มสิทธิ์การใช้งาน CookieRun Farm VIP', cost: 35, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
   { id: 'svc-c', name: 'โปรแกรมช่วยเล่น C', icon: '🧠', description: 'ฟีเจอร์ขั้นสูง กำลังอยู่ระหว่างปรับปรุงระบบ', cost: 50, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: false },
   { id: 'svc-vip', name: 'แพ็กเกจสมาชิก VIP', icon: '🎯', description: 'ปลดล็อกสิทธิพิเศษและบริการทั้งหมดในที่เดียว', cost: 80, durationMs: 7 * 24 * 60 * 60 * 1000, durationLabel: '7 วัน', available: true },
 ];
@@ -144,6 +144,21 @@ function formatRemaining(ms) {
   const hrs = Math.ceil(ms / (60 * 60 * 1000));
   if (hrs >= 24) return Math.ceil(hrs / 24) + ' วัน';
   return hrs + ' ชม.';
+}
+
+function getMembership(rentals, now = Date.now()) {
+  const suvipExpiresAt = Number((rentals || {}).suvip) || null;
+  return {
+    membershipTier: suvipExpiresAt && suvipExpiresAt > now ? 'SUVIP' : 'Standard',
+    suvipExpiresAt: suvipExpiresAt && suvipExpiresAt > now ? suvipExpiresAt : null,
+  };
+}
+
+function getCookieRunScreenLimit(rentals, membershipTier) {
+  const plan = (rentals || {})['cookie-run-farm-vip-plan'];
+  const durationDays = Number((rentals || {})['cookie-run-farm-vip-duration-days']);
+  if (plan === '30d' || durationDays === 30) return 5;
+  return membershipTier === 'SUVIP' ? 3 : 1;
 }
 
 // ------------------------------------------------------------------
@@ -274,7 +289,8 @@ app.get('/api/me', requireAuth, async (req, res) => {
   try {
     const user = await findUser(req.user.sub);
     if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
-    res.json({ username: user.username, role: user.role, points: user.points });
+    const membership = getMembership(user.rentals);
+    res.json({ username: user.username, role: user.role, points: user.points, ...membership });
   } catch (err) {
     res.status(500).json({ error: 'อ่านข้อมูลผู้ใช้ไม่สำเร็จ' });
   }
@@ -338,7 +354,8 @@ app.get('/api/services', requireAuth, async (req, res) => {
 
   const now = Date.now();
   const list = SERVICES.map((svc) => {
-    const expiresAt = (user.rentals || {})[svc.id];
+    const rentalKey = svc.id === 'svc-b' ? 'suvip' : svc.id;
+    const expiresAt = (user.rentals || {})[rentalKey];
     const rented = expiresAt && expiresAt > now;
     return {
       id: svc.id,
@@ -360,10 +377,19 @@ app.get('/api/services', requireAuth, async (req, res) => {
 app.get('/api/license/cookie-run-farm-vip', requireAuth, async (req, res) => {
   try {
     const user = await findUser(req.user.sub);
-    const expiresAt = user ? (user.rentals || {})['cookie-run-farm-vip'] : null;
     const serverTime = Date.now();
+    const rentals = user?.rentals || {};
+    const expiresAt = Number(rentals['cookie-run-farm-vip']) || null;
+    const membership = getMembership(rentals, serverTime);
     if (expiresAt && expiresAt > serverTime) {
-      return res.json({ authorized: true, expiresAt, serverTime });
+      return res.json({
+        authorized: true,
+        membershipTier: membership.membershipTier,
+        expiresAt,
+        suvipExpiresAt: membership.suvipExpiresAt,
+        maxScreens: getCookieRunScreenLimit(rentals, membership.membershipTier),
+        serverTime,
+      });
     }
     return res.status(403).json({ authorized: false });
   } catch (err) {
@@ -528,12 +554,13 @@ app.post('/api/rent', requireAuth, async (req, res) => {
 
   const rentals = user.rentals || {};
   const now = Date.now();
-  const currentExpiry = rentals[svc.id] && rentals[svc.id] > now ? rentals[svc.id] : now;
+  const rentalKey = svc.id === 'svc-b' ? 'suvip' : svc.id;
+  const currentExpiry = rentals[rentalKey] && rentals[rentalKey] > now ? rentals[rentalKey] : now;
   const newExpiry = currentExpiry + svc.durationMs;
   const updated = await pool.query(
     `UPDATE users SET points = points - $1, rentals = jsonb_set(COALESCE(rentals, '{}'::jsonb), $2, to_jsonb($3::bigint))
      WHERE username = $4 AND points >= $1 RETURNING points`,
-    [svc.cost, `{${svc.id}}`, newExpiry, req.user.sub]
+    [svc.cost, `{${rentalKey}}`, newExpiry, req.user.sub]
   );
   if (!updated.rowCount) return res.status(400).json({ error: 'พอยท์ไม่เพียงพอ กรุณาเติมพอยท์ก่อน' });
 
@@ -541,6 +568,7 @@ app.post('/api/rent', requireAuth, async (req, res) => {
     points: updated.rows[0].points,
     serviceId: svc.id,
     expiresAt: newExpiry,
+    ...(rentalKey === 'suvip' ? { membershipTier: 'SUVIP', suvipExpiresAt: newExpiry } : {}),
     expiresLabel: new Date(newExpiry).toLocaleString('th-TH'),
   });
 });
