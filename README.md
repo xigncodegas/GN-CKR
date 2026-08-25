@@ -105,6 +105,8 @@ Flow ตอนนี้เป็นแบบนี้:
 | POST   | `/api/login`     | ❌ | ล็อกอิน รับ `{ username, password }` คืน `{ token, user }` |
 | POST   | `/api/client/login` | ❌ | Desktop login คืน access token อายุสั้นและ refresh token |
 | POST   | `/api/client/refresh` | ❌ | หมุนเวียน refresh token และคืน access token ใหม่ |
+| GET    | `/api/client/store` | ✅ (client) | ดูพอยท์ปัจจุบันและบริการที่ซื้อได้ |
+| POST   | `/api/client/purchase` | ✅ (client) | ซื้อบริการด้วย `{ serviceId }` โดยหักพอยท์ฝั่งเซิร์ฟเวอร์ |
 | POST   | `/api/password-reset-requests` | ❌ | ส่งคำขอลืมรหัสผ่าน รับ `{ username, contact }` |
 | GET    | `/api/me`        | ✅ | ข้อมูลผู้ใช้ปัจจุบัน + พอยท์ล่าสุด |
 | GET    | `/api/packages`  | ✅ | รายการแพ็กเกจเติมพอยท์ |

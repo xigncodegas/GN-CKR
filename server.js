@@ -815,6 +815,118 @@ app.post('/api/client/slots/release', slotLimiter, requireClientAuth, async (req
   res.json({ ok: true });
 });
 
+function getClientStoreServices(user) {
+  const now = Date.now();
+  const rentals = user.rentals || {};
+  return SERVICES.map((service) => {
+    const isPermanent = service.id === 'svc-c';
+    const rentalKey = service.cookieRunBundle ? 'cookie-run-farm-vip' : service.id === 'svc-b' ? 'suvip' : service.id;
+    const expiresAt = isPermanent ? null : Number(rentals[rentalKey]) || null;
+    const owned = isPermanent && user.permanentProgramOwned;
+    return {
+      serviceId: service.id,
+      name: service.name,
+      price: service.cost,
+      plan: service.cookieRunBundle ? '30d' : service.id === 'cookie-run-farm-vip' ? '24h' : service.id === 'svc-b' ? 'suvip' : 'permanent',
+      available: service.available,
+      owned: !!owned,
+      active: !!(expiresAt && expiresAt > now) || !!owned,
+      expiresAt,
+      maxDevices: service.cookieRunBundle ? 5 : service.id === 'svc-b' ? 3 : service.id === 'cookie-run-farm-vip' ? 1 : null,
+    };
+  }).filter((service) => ['cookie-run-farm-vip', 'svc-b', 'svc-vip', 'svc-c'].includes(service.serviceId));
+}
+
+app.get('/api/client/store', requireClientAuth, async (req, res) => {
+  try {
+    const user = await getClientUser(req);
+    if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
+    res.json({ points: user.points, services: getClientStoreServices(user) });
+  } catch (err) {
+    res.status(500).json({ error: 'โหลดร้านค้าไม่สำเร็จ' });
+  }
+});
+
+app.post('/api/client/purchase', requireClientAuth, async (req, res) => {
+  const serviceId = String(req.body?.serviceId || '');
+  const service = SERVICES.find((item) => item.id === serviceId);
+  if (!service || !['cookie-run-farm-vip', 'svc-b', 'svc-vip', 'svc-c'].includes(serviceId)) {
+    return res.status(400).json({ error: 'ไม่พบบริการที่ซื้อได้' });
+  }
+  const user = await getClientUser(req);
+  if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+    if (service.permanent) {
+      const owned = await client.query(
+        `SELECT 1 FROM permanent_entitlements WHERE user_id = $1 AND entitlement_key = $2 FOR UPDATE`,
+        [user.id, service.id]
+      );
+      if (owned.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ ok: false, message: 'คุณมีสิทธิ์โปรแกรมถาวรอยู่แล้ว', owned: true, permanent: true });
+      }
+      const updated = await client.query(
+        `UPDATE users SET points = points - $1 WHERE id = $2 AND points >= $1 RETURNING points`,
+        [service.cost, user.id]
+      );
+      if (!updated.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ ok: false, message: 'พอยท์ไม่เพียงพอสำหรับการซื้อโปรแกรมถาวร' }); }
+      await client.query('INSERT INTO permanent_entitlements (user_id, entitlement_key) VALUES ($1, $2)', [user.id, service.id]);
+      await client.query(`INSERT INTO entitlements (user_id, entitlement_key, plan, max_devices) VALUES ($1, $2, 'permanent', 1) ON CONFLICT (user_id, entitlement_key, plan) DO NOTHING`, [user.id, service.id]);
+      await client.query('COMMIT');
+      await writeAudit(user.id, 'client_purchase', { serviceId, plan: 'permanent' });
+      return res.json({ ok: true, message: 'ซื้อโปรแกรมถาวรสำเร็จ', points: updated.rows[0].points, expiresAt: null, membershipTier: null, maxDevices: null });
+    }
+
+    const rentals = user.rentals || {};
+    const now = Date.now();
+    const rentalKey = service.cookieRunBundle ? 'cookie-run-farm-vip' : service.id === 'svc-b' ? 'suvip' : service.id;
+    const currentExpiry = Number(rentals[rentalKey]) > now ? Number(rentals[rentalKey]) : now;
+    const expiresAt = currentExpiry + service.durationMs;
+    const updated = await client.query(
+      `UPDATE users SET points = points - $1,
+         rentals = jsonb_set(
+           jsonb_set(
+             jsonb_set(COALESCE(rentals, '{}'::jsonb), $2, to_jsonb($3::bigint)),
+             $4, $5::jsonb
+           ),
+           $6, $7::jsonb
+         )
+       WHERE id = $8 AND points >= $1 RETURNING points`,
+      [service.cost, `{${rentalKey}}`, expiresAt, service.cookieRunBundle ? '{cookie-run-farm-vip-plan}' : `{${rentalKey}-plan}`, service.cookieRunBundle ? '"30d"' : '"active"', service.cookieRunBundle ? '{cookie-run-farm-vip-duration-days}' : `{${rentalKey}-duration-days}`, service.cookieRunBundle ? '30' : service.id === 'svc-b' ? '1' : '1', user.id]
+    );
+    if (!updated.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ ok: false, message: `พอยท์ไม่เพียงพอสำหรับ${service.name}` }); }
+    const plan = service.cookieRunBundle ? '30d' : service.id === 'svc-b' ? 'suvip' : '24h';
+    const maxDevices = service.cookieRunBundle ? 5 : service.id === 'svc-b' ? 3 : 1;
+    await client.query(
+      `INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+       VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000), $5)
+       ON CONFLICT (user_id, entitlement_key, plan) DO UPDATE SET expires_at = GREATEST(entitlements.expires_at, EXCLUDED.expires_at), max_devices = EXCLUDED.max_devices`,
+      [user.id, rentalKey, plan, expiresAt, maxDevices]
+    );
+    if (service.cookieRunBundle) {
+      await client.query(
+        `INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+         VALUES ($1, 'suvip', 'suvip', to_timestamp($2::double precision / 1000), 3)
+         ON CONFLICT (user_id, entitlement_key, plan) DO UPDATE SET expires_at = GREATEST(entitlements.expires_at, EXCLUDED.expires_at)`,
+        [user.id, expiresAt]
+      );
+    }
+    await client.query('COMMIT');
+    await writeAudit(user.id, 'client_purchase', { serviceId, plan });
+    const membershipTier = service.cookieRunBundle || service.id === 'svc-b'
+      ? 'suvip'
+      : getMembership(rentals).membershipTier.toLowerCase();
+    return res.json({ ok: true, message: `ซื้อ${service.name}สำเร็จ`, points: updated.rows[0].points, expiresAt, membershipTier, maxDevices });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('ซื้อบริการจาก client ไม่สำเร็จ');
+    res.status(500).json({ ok: false, message: 'ซื้อบริการไม่สำเร็จ กรุณาลองใหม่' });
+  } finally { client.release(); }
+});
+
 // ------------------------------------------------------------------
 // POST /api/topup/request — สร้างคำขอเติมพอยท์ + QR PromptPay
 // ยังไม่เพิ่มพอยท์ตอนนี้ ต้องรอแอดมินตรวจสลิปแล้วกดอนุมัติก่อน
