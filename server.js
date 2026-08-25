@@ -13,7 +13,23 @@ const generatePromptPayPayload = require('promptpay-qr');
 const QRCode = require('qrcode');
 
 const app = express();
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'self'"],
+      fontSrc: ["'self'", 'https:', 'data:'],
+      formAction: ["'self'"],
+      frameAncestors: ["'self'"],
+      imgSrc: ["'self'", 'data:'],
+      objectSrc: ["'none'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrcAttr: ["'unsafe-inline'"],
+      styleSrc: ["'self'", 'https:', "'unsafe-inline'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+}));
 // จำกัดขนาด body ไว้ที่ 6mb เพราะสลิปโอนเงินที่ผู้ใช้แนบมาจะถูกส่งมาเป็น base64 ใน JSON
 app.use(express.json({ limit: '6mb' }));
 const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
