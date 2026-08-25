@@ -134,7 +134,7 @@ async function buildPromptPayQr(amount) {
 // โปรแกรมช่วยเล่นที่ให้เช่า (ตัวอย่างสาธิต)
 // ------------------------------------------------------------------
 const SERVICES = [
-  { id: 'svc-a', name: 'โปรแกรมช่วยเล่น A', icon: '🚀', description: 'เครื่องมือช่วยเพิ่มความสะดวกระหว่างเล่น รองรับการตั้งค่าพื้นฐาน', cost: 20, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
+  { id: 'cookie-run-farm-vip', name: 'CookieRun Farm VIP', icon: '🚀', description: 'เครื่องมือช่วยเพิ่มความสะดวกระหว่างเล่น รองรับการตั้งค่าพื้นฐาน', cost: 20, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
   { id: 'svc-b', name: 'โปรแกรมช่วยเล่น B', icon: '🛰️', description: 'ระบบเสริมสำหรับผู้ใช้ระดับกลาง มีการอัปเดตสม่ำเสมอ', cost: 35, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
   { id: 'svc-c', name: 'โปรแกรมช่วยเล่น C', icon: '🧠', description: 'ฟีเจอร์ขั้นสูง กำลังอยู่ระหว่างปรับปรุงระบบ', cost: 50, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: false },
   { id: 'svc-vip', name: 'แพ็กเกจสมาชิก VIP', icon: '🎯', description: 'ปลดล็อกสิทธิพิเศษและบริการทั้งหมดในที่เดียว', cost: 80, durationMs: 7 * 24 * 60 * 60 * 1000, durationLabel: '7 วัน', available: true },
@@ -349,10 +349,26 @@ app.get('/api/services', requireAuth, async (req, res) => {
       durationLabel: svc.durationLabel,
       available: svc.available,
       rented: !!rented,
+      expiresAt: expiresAt || null,
       remainingLabel: rented ? formatRemaining(expiresAt - now) : null,
     };
   });
   res.json(list);
+});
+
+// GET /api/license/cookie-run-farm-vip — ตรวจสอบสิทธิ์ CookieRun Farm VIP
+app.get('/api/license/cookie-run-farm-vip', requireAuth, async (req, res) => {
+  try {
+    const user = await findUser(req.user.sub);
+    const expiresAt = user ? (user.rentals || {})['cookie-run-farm-vip'] : null;
+    const serverTime = Date.now();
+    if (expiresAt && expiresAt > serverTime) {
+      return res.json({ authorized: true, expiresAt, serverTime });
+    }
+    return res.status(403).json({ authorized: false });
+  } catch (err) {
+    return res.status(500).json({ authorized: false });
+  }
 });
 
 // ------------------------------------------------------------------
