@@ -1,0 +1,16 @@
+# ความลับ — ห้าม commit เด็ดขาด (มี JWT_SECRET, ADMIN_PASSWORD_HASH)
+.env
+.env.local
+.env.*.local
+
+# dependency ที่ npm install ให้เอง ไม่ต้องเก็บใน git
+node_modules/
+
+# ไฟล์บีบอัด/สำรอง ไม่จำเป็นต้องอยู่ใน repo
+*.rar
+*.zip
+
+# log และไฟล์ระบบทั่วไป
+npm-debug.log*
+.DS_Store
+Thumbs.db

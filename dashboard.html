@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AURORA HUB — แดชบอร์ดสมาชิก</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;600;700;800&family=Sarabun:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<div class="bg-fx"></div>
+
+<div class="dash-wrap">
+  <aside class="sidebar">
+    <div class="side-brand">
+      <svg class="mini-core" viewBox="0 0 100 100">
+        <circle class="core-ring" cx="50" cy="50" r="42" stroke-dasharray="6 10"/>
+        <circle class="core-dot" cx="50" cy="50" r="9"/>
+      </svg>
+      <span>AURORA HUB</span>
+    </div>
+    <button class="nav-btn active" data-panel="dashboard"><span class="ic">🏠</span> ภาพรวม</button>
+    <button class="nav-btn" data-panel="topup"><span class="ic">💎</span> เติมพอยท์</button>
+    <button class="nav-btn" data-panel="services"><span class="ic">🧩</span> เช่าโปรแกรมช่วยเล่น</button>
+    <button class="nav-btn" id="side-contact-admin"><span class="ic">💬</span> ติดต่อแอดมิน</button>
+    <div class="nav-spacer"></div>
+    <button class="nav-btn logout" id="btn-logout"><span class="ic">↩</span> ออกจากระบบ</button>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h2 id="greeting">ยินดีต้อนรับกลับ</h2>
+        <div class="sub">ตรวจสอบสถานะบัญชีและบริการของคุณด้านล่าง</div>
+      </div>
+      <div class="point-chip">
+        <span class="lbl" id="chip-label">พอยท์คงเหลือ</span>
+        <span class="amt" id="point-balance">0</span>
+      </div>
+    </div>
+
+    <!-- overview -->
+    <div class="panel active" id="panel-dashboard">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="k">พอยท์คงเหลือ</div><div class="v gold" id="stat-points">0</div></div>
+        <div class="stat-card"><div class="k">สถานะสมาชิก</div><div class="v cyan" id="stat-role">Standard</div></div>
+        <div class="stat-card"><div class="k">โปรแกรมที่เช่าอยู่</div><div class="v magenta" id="stat-active">0 รายการ</div></div>
+      </div>
+      <div class="section-title"><span class="dash"></span>ทางลัด</div>
+      <div class="pkg-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
+        <div class="pkg-card" onclick="switchPanel('topup')">
+          <div class="pts" style="font-size:18px;">💎 เติมพอยท์</div>
+          <div class="price">เติมพอยท์เพื่อใช้บริการ</div>
+          <button type="button">ไปหน้าเติมพอยท์</button>
+        </div>
+        <div class="pkg-card" onclick="switchPanel('services')">
+          <div class="pts" style="font-size:18px;">🧩 เช่าโปรแกรม</div>
+          <div class="price">ดูเมนูโปรแกรมช่วยเล่นทั้งหมด</div>
+          <button type="button">ดูเมนูบริการ</button>
+        </div>
+        <div class="pkg-card" onclick="openModal('modal-contact')">
+          <div class="pts" style="font-size:18px;">💬 แอดมิน</div>
+          <div class="price">สอบถามหรือแจ้งปัญหา</div>
+          <button type="button">ติดต่อแอดมิน</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- top up -->
+    <div class="panel" id="panel-topup">
+      <div class="section-title"><span class="dash"></span>เลือกแพ็กเกจเติมพอยท์</div>
+      <div class="pkg-grid" id="package-grid">
+        <div class="pkg-card"><div class="price">กำลังโหลดแพ็กเกจ...</div></div>
+      </div>
+      <p style="color:var(--text-dim); font-size:12.5px;">* พอยท์จะถูกเพิ่มทันทีในโหมดเดโม ระบบจริงควรเชื่อมเกตเวย์ชำระเงินและยืนยันสลิปก่อนเพิ่มพอยท์</p>
+    </div>
+
+    <!-- services -->
+    <div class="panel" id="panel-services">
+      <div class="section-title"><span class="dash"></span>เช่าโปรแกรมช่วยเล่น</div>
+      <div class="svc-grid" id="service-grid">
+        <div class="svc-card"><div class="svc-desc">กำลังโหลดรายการโปรแกรม...</div></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ============ MODAL: contact admin ============ -->
+<div class="modal-overlay" id="modal-contact">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-contact')">✕</button>
+    <h3>ติดต่อแอดมิน</h3>
+    <p class="modal-sub">เลือกช่องทางที่สะดวก หรือฝากข้อความไว้ด้านล่าง</p>
+
+    <a class="contact-row" href="#">
+      <div class="ic">📱</div>
+      <div><div class="t1">Line Official</div><div class="t2">@aurorahub</div></div>
+    </a>
+    <a class="contact-row" href="#">
+      <div class="ic">🎮</div>
+      <div><div class="t1">Discord</div><div class="t2">discord.gg/aurorahub</div></div>
+    </a>
+    <a class="contact-row" href="#">
+      <div class="ic">✉️</div>
+      <div><div class="t1">อีเมล</div><div class="t2">support@aurorahub.example</div></div>
+    </a>
+
+    <label style="font-size:13px; color:var(--text-dim); font-weight:500; display:block; margin-top:16px;">หรือฝากข้อความถึงแอดมิน</label>
+    <textarea id="contact-message" placeholder="พิมพ์ข้อความของคุณที่นี่..."></textarea>
+    <button class="btn-primary" style="margin-top:14px;" onclick="sendMessage()">ส่งข้อความ</button>
+  </div>
+</div>
+
+<div id="page-loader"><div class="spin"></div><div class="lbl">กำลังโหลด...</div></div>
+<div id="toast"></div>
+
+<script src="assets/shared.js"></script>
+<script>
+  // ป้องกันหน้านี้ — ถ้าไม่มี token ให้เด้งกลับไปหน้า login ทันที
+  if (!AuthStore.getToken()) {
+    window.location.href = 'index.html';
+  }
+
+  let currentUser = AuthStore.getUser() || { username: 'สมาชิก', role: 'member', points: 0 };
+  let activeCount = 0;
+
+  function renderUser(u) {
+    document.getElementById('greeting').textContent = 'ยินดีต้อนรับ' + (u.role === 'admin' ? 'แอดมิน' : '') + ', ' + u.username;
+    document.getElementById('point-balance').textContent = u.points.toLocaleString();
+    document.getElementById('stat-points').textContent = u.points.toLocaleString();
+    document.getElementById('stat-role').textContent = u.role === 'admin' ? 'Admin' : 'Standard';
+    document.getElementById('chip-label').textContent = u.role === 'admin' ? 'สิทธิ์แอดมิน + พอยท์' : 'พอยท์คงเหลือ';
+  }
+  renderUser(currentUser);
+
+  // ดึงข้อมูลผู้ใช้ล่าสุดจากเซิร์ฟเวอร์ (ยืนยันว่า token ยังใช้ได้ + ยอดพอยท์ล่าสุด)
+  async function refreshMe() {
+    try {
+      const res = await apiFetch('/api/me');
+      if (!res.ok) return;
+      const data = await res.json();
+      currentUser = data;
+      AuthStore.save(AuthStore.getToken(), currentUser);
+      renderUser(currentUser);
+    } catch (e) { /* apiFetch already redirects on 401 */ }
+  }
+  refreshMe();
+
+  // ---------- navigation ----------
+  function switchPanel(name) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('panel-' + name).classList.add('active');
+    document.querySelectorAll('.nav-btn[data-panel]').forEach(b => {
+      b.classList.toggle('active', b.dataset.panel === name);
+    });
+  }
+  document.querySelectorAll('.nav-btn[data-panel]').forEach(b => {
+    b.addEventListener('click', () => switchPanel(b.dataset.panel));
+  });
+
+  document.getElementById('btn-logout').addEventListener('click', () => {
+    AuthStore.clear();
+    window.location.href = 'index.html';
+  });
+  document.getElementById('side-contact-admin').addEventListener('click', () => openModal('modal-contact'));
+
+  function sendMessage() {
+    const ta = document.getElementById('contact-message');
+    if (!ta.value.trim()) { showToast('กรุณาพิมพ์ข้อความก่อนส่ง'); return; }
+    ta.value = '';
+    closeModal('modal-contact');
+    showToast('ส่งข้อความถึงแอดมินแล้ว');
+  }
+
+  // ---------- top-up packages ----------
+  async function loadPackages() {
+    const grid = document.getElementById('package-grid');
+    try {
+      const res = await apiFetch('/api/packages');
+      const packages = await res.json();
+      grid.innerHTML = '';
+      packages.forEach(pkg => {
+        const el = document.createElement('div');
+        el.className = 'pkg-card' + (pkg.best ? ' best' : '');
+        el.innerHTML = `
+          <div class="pts">${pkg.points.toLocaleString()} <small>PT</small></div>
+          <div class="price">${pkg.priceLabel}</div>
+          <button type="button">เติมเลย</button>`;
+        el.querySelector('button').addEventListener('click', () => buyPackage(pkg.id, el.querySelector('button')));
+        grid.appendChild(el);
+      });
+    } catch (e) { /* handled by apiFetch redirect */ }
+  }
+
+  async function buyPackage(packageId, btn) {
+    btn.disabled = true;
+    btn.textContent = 'กำลังทำรายการ...';
+    try {
+      const res = await apiFetch('/api/topup', {
+        method: 'POST',
+        body: JSON.stringify({ packageId }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'เติมพอยท์ไม่สำเร็จ'); return; }
+      currentUser.points = data.points;
+      AuthStore.save(AuthStore.getToken(), currentUser);
+      renderUser(currentUser);
+      showToast('เติมพอยท์สำเร็จ ยอดคงเหลือ ' + data.points.toLocaleString() + ' PT');
+    } catch (e) {
+      showToast('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'เติมเลย';
+    }
+  }
+
+  // ---------- rentable programs ----------
+  async function loadServices() {
+    const grid = document.getElementById('service-grid');
+    try {
+      const res = await apiFetch('/api/services');
+      const services = await res.json();
+      grid.innerHTML = '';
+      activeCount = services.filter(s => s.rented).length;
+      document.getElementById('stat-active').textContent = activeCount + ' รายการ';
+
+      services.forEach(svc => {
+        const el = document.createElement('div');
+        el.className = 'svc-card';
+        const badge = !svc.available
+          ? '<span class="badge soon">เร็ว ๆ นี้</span>'
+          : svc.rented
+            ? `<span class="badge rented">เช่าอยู่ · เหลือ ${svc.remainingLabel}</span>`
+            : '<span class="badge on">พร้อมเช่า</span>';
+        const btnLabel = !svc.available ? 'ยังไม่เปิดใช้' : svc.rented ? 'ต่ออายุ' : `เช่าเลย (${svc.cost} PT / ${svc.durationLabel})`;
+
+        el.innerHTML = `
+          <div class="svc-top">
+            <div class="svc-icon">${svc.icon}</div>
+            <div><div class="svc-name">${svc.name}</div></div>
+          </div>
+          <div class="svc-desc">${svc.description}</div>
+          <div class="svc-foot">${badge}<button type="button" ${!svc.available ? 'disabled' : ''}>${btnLabel}</button></div>`;
+
+        if (svc.available) {
+          el.querySelector('button').addEventListener('click', () => rentService(svc.id, el.querySelector('button')));
+        }
+        grid.appendChild(el);
+      });
+    } catch (e) { /* handled by apiFetch redirect */ }
+  }
+
+  async function rentService(serviceId, btn) {
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'กำลังทำรายการ...';
+    try {
+      const res = await apiFetch('/api/rent', {
+        method: 'POST',
+        body: JSON.stringify({ serviceId }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'เช่าโปรแกรมไม่สำเร็จ'); btn.disabled = false; btn.textContent = original; return; }
+      currentUser.points = data.points;
+      AuthStore.save(AuthStore.getToken(), currentUser);
+      renderUser(currentUser);
+      showToast('เช่าโปรแกรมสำเร็จ ใช้ได้ถึง ' + data.expiresLabel);
+      loadServices();
+    } catch (e) {
+      showToast('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้');
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }
+
+  loadPackages();
+  loadServices();
+</script>
+</body>
+</html>
