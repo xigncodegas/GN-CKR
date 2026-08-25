@@ -24,6 +24,7 @@
     <button class="nav-btn active" data-panel="dashboard"><span class="ic">🏠</span> ภาพรวม</button>
     <button class="nav-btn" data-panel="topup"><span class="ic">💎</span> เติมพอยท์</button>
     <button class="nav-btn" data-panel="services"><span class="ic">🧩</span> เช่าโปรแกรมช่วยเล่น</button>
+    <button class="nav-btn" id="nav-admin-topups" data-panel="admin-topups" style="display:none;"><span class="ic">🧾</span> ตรวจสอบการเติมพอยท์</button>
     <button class="nav-btn" id="side-contact-admin"><span class="ic">💬</span> ติดต่อแอดมิน</button>
     <div class="nav-spacer"></div>
     <button class="nav-btn logout" id="btn-logout"><span class="ic">↩</span> ออกจากระบบ</button>
@@ -74,7 +75,12 @@
       <div class="pkg-grid" id="package-grid">
         <div class="pkg-card"><div class="price">กำลังโหลดแพ็กเกจ...</div></div>
       </div>
-      <p style="color:var(--text-dim); font-size:12.5px;">* พอยท์จะถูกเพิ่มทันทีในโหมดเดโม ระบบจริงควรเชื่อมเกตเวย์ชำระเงินและยืนยันสลิปก่อนเพิ่มพอยท์</p>
+      <p style="color:var(--text-dim); font-size:12.5px;">* สแกน PromptPay QR แล้วแนบสลิปโอนเงิน พอยท์จะเข้าหลังแอดมินตรวจสอบและอนุมัติ</p>
+
+      <div class="section-title" style="margin-top:26px;"><span class="dash"></span>ประวัติการเติมพอยท์</div>
+      <div id="topup-history" style="display:flex; flex-direction:column; gap:8px;">
+        <div class="svc-desc">ยังไม่มีประวัติ</div>
+      </div>
     </div>
 
     <!-- services -->
@@ -84,7 +90,35 @@
         <div class="svc-card"><div class="svc-desc">กำลังโหลดรายการโปรแกรม...</div></div>
       </div>
     </div>
+
+    <!-- admin: review topups -->
+    <div class="panel" id="panel-admin-topups">
+      <div class="section-title"><span class="dash"></span>คำขอเติมพอยท์ที่รอตรวจสอบ</div>
+      <div id="admin-topup-list" style="display:flex; flex-direction:column; gap:14px;">
+        <div class="svc-desc">กำลังโหลด...</div>
+      </div>
+    </div>
   </main>
+</div>
+
+<!-- ============ MODAL: PromptPay QR + แนบสลิป ============ -->
+<div class="modal-overlay" id="modal-topup">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-topup')">✕</button>
+    <h3>สแกนจ่ายผ่าน PromptPay</h3>
+    <p class="modal-sub" id="topup-modal-sub">กำลังสร้าง QR...</p>
+
+    <div style="display:flex; justify-content:center; margin:14px 0;">
+      <img id="topup-qr-img" src="" alt="PromptPay QR" style="width:220px; height:220px; border-radius:12px; background:#fff; padding:8px; display:none;">
+    </div>
+    <div id="topup-amount" style="text-align:center; font-size:22px; font-weight:700; color:var(--gold, #f2c078);"></div>
+
+    <label style="font-size:13px; color:var(--text-dim); font-weight:500; display:block; margin-top:16px;">แนบภาพสลิปโอนเงิน</label>
+    <input type="file" id="slip-file-input" accept="image/*" style="margin-top:8px; width:100%; color:var(--text-dim);">
+
+    <button class="btn-primary" style="margin-top:14px;" id="btn-submit-slip" onclick="submitSlip()">ส่งสลิปให้ตรวจสอบ</button>
+    <p id="topup-modal-error" class="form-error" style="margin-top:10px;"></p>
+  </div>
 </div>
 
 <!-- ============ MODAL: contact admin ============ -->
@@ -132,6 +166,7 @@
     document.getElementById('stat-points').textContent = u.points.toLocaleString();
     document.getElementById('stat-role').textContent = u.role === 'admin' ? 'Admin' : 'Standard';
     document.getElementById('chip-label').textContent = u.role === 'admin' ? 'สิทธิ์แอดมิน + พอยท์' : 'พอยท์คงเหลือ';
+    document.getElementById('nav-admin-topups').style.display = u.role === 'admin' ? '' : 'none';
   }
   renderUser(currentUser);
 
@@ -155,6 +190,7 @@
     document.querySelectorAll('.nav-btn[data-panel]').forEach(b => {
       b.classList.toggle('active', b.dataset.panel === name);
     });
+    if (name === 'admin-topups') loadAdminTopups();
   }
   document.querySelectorAll('.nav-btn[data-panel]').forEach(b => {
     b.addEventListener('click', () => switchPanel(b.dataset.panel));
@@ -175,6 +211,8 @@
   }
 
   // ---------- top-up packages ----------
+  let currentTopupId = null;
+
   async function loadPackages() {
     const grid = document.getElementById('package-grid');
     try {
@@ -188,31 +226,150 @@
           <div class="pts">${pkg.points.toLocaleString()} <small>PT</small></div>
           <div class="price">${pkg.priceLabel}</div>
           <button type="button">เติมเลย</button>`;
-        el.querySelector('button').addEventListener('click', () => buyPackage(pkg.id, el.querySelector('button')));
+        el.querySelector('button').addEventListener('click', () => startTopup(pkg.id, el.querySelector('button')));
         grid.appendChild(el);
       });
     } catch (e) { /* handled by apiFetch redirect */ }
   }
 
-  async function buyPackage(packageId, btn) {
+  // ขั้น 1: ขอ QR PromptPay จากเซิร์ฟเวอร์สำหรับแพ็กเกจที่เลือก
+  async function startTopup(packageId, btn) {
     btn.disabled = true;
-    btn.textContent = 'กำลังทำรายการ...';
+    btn.textContent = 'กำลังสร้าง QR...';
     try {
-      const res = await apiFetch('/api/topup', {
+      const res = await apiFetch('/api/topup/request', {
         method: 'POST',
         body: JSON.stringify({ packageId }),
       });
       const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'เติมพอยท์ไม่สำเร็จ'); return; }
-      currentUser.points = data.points;
-      AuthStore.save(AuthStore.getToken(), currentUser);
-      renderUser(currentUser);
-      showToast('เติมพอยท์สำเร็จ ยอดคงเหลือ ' + data.points.toLocaleString() + ' PT');
+      if (!res.ok) { showToast(data.error || 'สร้าง QR ไม่สำเร็จ'); return; }
+
+      currentTopupId = data.topupId;
+      document.getElementById('topup-modal-sub').textContent = 'สแกนจ่ายให้ตรงยอดนี้ แล้วแนบสลิปด้านล่าง';
+      document.getElementById('topup-amount').textContent = '฿' + data.amount.toFixed(2);
+      const img = document.getElementById('topup-qr-img');
+      img.src = data.qrDataUrl;
+      img.style.display = 'block';
+      document.getElementById('slip-file-input').value = '';
+      document.getElementById('topup-modal-error').textContent = '';
+      openModal('modal-topup');
     } catch (e) {
       showToast('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้');
     } finally {
       btn.disabled = false;
       btn.textContent = 'เติมเลย';
+    }
+  }
+
+  // ขั้น 2: อ่านไฟล์สลิปเป็น base64 แล้วส่งไปแนบกับคำขอเติมพอยท์
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function submitSlip() {
+    const fileInput = document.getElementById('slip-file-input');
+    const errBox = document.getElementById('topup-modal-error');
+    const btn = document.getElementById('btn-submit-slip');
+    errBox.textContent = '';
+
+    if (!fileInput.files[0]) { errBox.textContent = 'กรุณาแนบไฟล์รูปสลิปก่อน'; return; }
+    if (!currentTopupId) { errBox.textContent = 'ไม่พบคำขอเติมพอยท์ กรุณาเริ่มใหม่'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'กำลังส่ง...';
+    try {
+      const imageBase64 = await fileToBase64(fileInput.files[0]);
+      const res = await apiFetch(`/api/topup/${currentTopupId}/slip`, {
+        method: 'POST',
+        body: JSON.stringify({ imageBase64 }),
+      });
+      const data = await res.json();
+      if (!res.ok) { errBox.textContent = data.error || 'ส่งสลิปไม่สำเร็จ'; return; }
+
+      closeModal('modal-topup');
+      showToast('ส่งสลิปแล้ว รอแอดมินตรวจสอบ');
+      currentTopupId = null;
+      loadTopupHistory();
+    } catch (e) {
+      errBox.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'ส่งสลิปให้ตรวจสอบ';
+    }
+  }
+
+  const TOPUP_STATUS_LABEL = {
+    pending: '<span class="badge soon">รอโอน/แนบสลิป</span>',
+    awaiting_review: '<span class="badge on">รอแอดมินตรวจสอบ</span>',
+    approved: '<span class="badge rented">อนุมัติแล้ว ✓</span>',
+    rejected: '<span class="badge soon">ถูกปฏิเสธ</span>',
+  };
+
+  async function loadTopupHistory() {
+    const box = document.getElementById('topup-history');
+    try {
+      const res = await apiFetch('/api/my/topups');
+      const list = await res.json();
+      if (!list.length) { box.innerHTML = '<div class="svc-desc">ยังไม่มีประวัติ</div>'; return; }
+      box.innerHTML = list.map(t => `
+        <div class="svc-card" style="padding:12px 16px;">
+          <div class="svc-foot" style="align-items:center;">
+            <div>
+              <div class="svc-name" style="font-size:14px;">${t.points.toLocaleString()} PT · ฿${t.amount.toFixed(2)}</div>
+              <div class="svc-desc" style="margin:2px 0 0;">${new Date(t.createdAt).toLocaleString('th-TH')}${t.status === 'rejected' && t.rejectReason ? ' · เหตุผล: ' + t.rejectReason : ''}</div>
+            </div>
+            ${TOPUP_STATUS_LABEL[t.status] || ''}
+          </div>
+        </div>`).join('');
+    } catch (e) { /* handled by apiFetch redirect */ }
+  }
+
+  // ---------- admin: ตรวจสอบคำขอเติมพอยท์ ----------
+  async function loadAdminTopups() {
+    if (currentUser.role !== 'admin') return;
+    const box = document.getElementById('admin-topup-list');
+    try {
+      const res = await apiFetch('/api/admin/topups'); // ค่าเริ่มต้น = awaiting_review เท่านั้น
+      const list = await res.json();
+      if (!list.length) { box.innerHTML = '<div class="svc-desc">ไม่มีคำขอที่รอตรวจสอบตอนนี้</div>'; return; }
+      box.innerHTML = list.map(t => `
+        <div class="svc-card" data-topup-id="${t.id}">
+          <div class="svc-top">
+            <div><div class="svc-name">${t.username} · ${t.points.toLocaleString()} PT · ฿${t.amount.toFixed(2)}</div>
+            <div class="svc-desc">ส่งสลิปเมื่อ ${new Date(t.slipUploadedAt || t.createdAt).toLocaleString('th-TH')}</div></div>
+          </div>
+          ${t.slipImageBase64 ? `<img src="${t.slipImageBase64}" style="max-width:220px; border-radius:10px; margin:10px 0; display:block;">` : ''}
+          <div class="svc-foot">
+            <button type="button" class="btn-approve">✅ อนุมัติ</button>
+            <button type="button" class="btn-reject">❌ ปฏิเสธ</button>
+          </div>
+        </div>`).join('');
+
+      box.querySelectorAll('.btn-approve').forEach(b => {
+        b.addEventListener('click', () => reviewTopup(b.closest('[data-topup-id]').dataset.topupId, 'approve', b));
+      });
+      box.querySelectorAll('.btn-reject').forEach(b => {
+        b.addEventListener('click', () => reviewTopup(b.closest('[data-topup-id]').dataset.topupId, 'reject', b));
+      });
+    } catch (e) { /* handled by apiFetch redirect */ }
+  }
+
+  async function reviewTopup(topupId, action, btn) {
+    btn.disabled = true;
+    try {
+      const res = await apiFetch(`/api/admin/topups/${topupId}/${action}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'ทำรายการไม่สำเร็จ'); btn.disabled = false; return; }
+      showToast(action === 'approve' ? 'อนุมัติแล้ว เพิ่มพอยท์ให้ผู้ใช้เรียบร้อย' : 'ปฏิเสธคำขอแล้ว');
+      loadAdminTopups();
+    } catch (e) {
+      showToast('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้');
+      btn.disabled = false;
     }
   }
 
@@ -277,6 +434,7 @@
 
   loadPackages();
   loadServices();
+  loadTopupHistory();
 </script>
 </body>
 </html>

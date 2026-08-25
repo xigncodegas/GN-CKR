@@ -1,14 +1,18 @@
 require('dotenv').config();
 
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const generatePromptPayPayload = require('promptpay-qr');
+const QRCode = require('qrcode');
 
 const app = express();
-app.use(express.json());
+// จำกัดขนาด body ไว้ที่ 6mb เพราะสลิปโอนเงินที่ผู้ใช้แนบมาจะถูกส่งมาเป็น base64 ใน JSON
+app.use(express.json({ limit: '6mb' }));
 app.use(cors()); // ปรับ origin ให้เจาะจงโดเมนจริงก่อนใช้งานจริง (เช่น { origin: 'https://yoursite.com' })
 
 // ------------------------------------------------------------------
@@ -30,6 +34,14 @@ if (!JWT_SECRET) {
 if (!process.env.ADMIN_PASSWORD_HASH) {
   console.error('❌ ไม่พบ ADMIN_PASSWORD_HASH ใน .env — รันคำสั่ง `npm run hash-password -- "รหัสผ่าน"` ก่อน');
   process.exit(1);
+}
+
+// PromptPay ID = เบอร์โทรศัพท์ (หรือเลขบัตรประชาชน) ที่จะใช้รับเงินจริง
+// ใส่ในไฟล์ .env -> PROMPTPAY_ID ไม่ต้อง exit ถ้ายังไม่ตั้งค่า แค่เตือนไว้
+// เพราะระบบอื่น ๆ (login, เช่าโปรแกรม) ยังใช้งานได้ปกติ มีแค่ QR เติมพอยท์ที่จะสร้างไม่ได้
+const PROMPTPAY_ID = process.env.PROMPTPAY_ID || '';
+if (!PROMPTPAY_ID) {
+  console.warn('⚠️ ไม่พบ PROMPTPAY_ID ใน .env — ระบบเติมพอยท์ผ่าน QR จะสร้าง QR ไม่ได้จนกว่าจะตั้งค่า');
 }
 
 // ------------------------------------------------------------------
@@ -56,11 +68,32 @@ function findUser(username) {
 // ก่อนค่อยเพิ่มพอยท์ ไม่ใช่เพิ่มทันทีตามที่ client ขอ
 // ------------------------------------------------------------------
 const PACKAGES = [
-  { id: 'pkg-100', points: 100, priceLabel: '฿39' },
-  { id: 'pkg-300', points: 300, priceLabel: '฿99', best: true },
-  { id: 'pkg-650', points: 650, priceLabel: '฿199' },
-  { id: 'pkg-1500', points: 1500, priceLabel: '฿399' },
+  { id: 'pkg-100', points: 100, price: 39, priceLabel: '฿39' },
+  { id: 'pkg-300', points: 300, price: 99, priceLabel: '฿99', best: true },
+  { id: 'pkg-650', points: 650, price: 199, priceLabel: '฿199' },
+  { id: 'pkg-1500', points: 1500, price: 399, priceLabel: '฿399' },
 ];
+
+// ------------------------------------------------------------------
+// คำขอเติมพอยท์ที่รอตรวจสอบสลิป (ตัวอย่างสาธิต — อยู่ในหน่วยความจำ)
+// สถานะ: 'pending' (สร้าง QR แล้วรอโอน/แนบสลิป) -> 'awaiting_review' (แนบสลิปแล้ว
+// รอแอดมินตรวจ) -> 'approved' (แอดมินอนุมัติ เพิ่มพอยท์แล้ว) หรือ 'rejected'
+// ------------------------------------------------------------------
+const pendingTopups = [];
+
+// เพิ่มเศษสตางค์เล็กน้อยที่ไม่ซ้ำกันต่อยอดเงิน ช่วยให้แอดมินจับคู่ระหว่าง
+// "คำขอในระบบ" กับ "ยอดโอนที่เข้าบัญชีจริง" ได้ง่ายขึ้นเวลามีคนเติมพร้อมกันหลายคน
+let topupSequence = 0;
+function nextUniqueAmount(basePrice) {
+  topupSequence = (topupSequence + 1) % 100;
+  return Math.round((basePrice + topupSequence / 100) * 100) / 100;
+}
+
+async function buildPromptPayQr(amount) {
+  if (!PROMPTPAY_ID) return null;
+  const payload = generatePromptPayPayload(PROMPTPAY_ID, { amount });
+  return QRCode.toDataURL(payload, { margin: 1, width: 280 });
+}
 
 // ------------------------------------------------------------------
 // โปรแกรมช่วยเล่นที่ให้เช่า (ตัวอย่างสาธิต)
@@ -176,6 +209,14 @@ app.get('/api/packages', requireAuth, (req, res) => {
 });
 
 // ------------------------------------------------------------------
+// GET /api/promptpay-status — เช็กว่าตั้งค่า PROMPTPAY_ID ไว้หรือยัง
+// ให้หน้าเว็บใช้เตือนแอดมินถ้ายังไม่ได้ตั้งค่า
+// ------------------------------------------------------------------
+app.get('/api/promptpay-status', requireAuth, (req, res) => {
+  res.json({ configured: !!PROMPTPAY_ID });
+});
+
+// ------------------------------------------------------------------
 // GET /api/services — รายการโปรแกรมช่วยเล่น พร้อมสถานะการเช่าของผู้ใช้คนนี้
 // ------------------------------------------------------------------
 app.get('/api/services', requireAuth, (req, res) => {
@@ -202,20 +243,138 @@ app.get('/api/services', requireAuth, (req, res) => {
 });
 
 // ------------------------------------------------------------------
-// POST /api/topup — เติมพอยท์ตามแพ็กเกจที่เลือก
-// สาธิตเท่านั้น: เพิ่มพอยท์ทันทีโดยไม่มีการตรวจสอบการชำระเงินจริง
-// ระบบจริงต้องยืนยันว่าชำระเงินสำเร็จก่อน (เช่น webhook จาก payment gateway)
+// POST /api/topup/request — สร้างคำขอเติมพอยท์ + QR PromptPay
+// ยังไม่เพิ่มพอยท์ตอนนี้ ต้องรอแอดมินตรวจสลิปแล้วกดอนุมัติก่อน
 // ------------------------------------------------------------------
-app.post('/api/topup', requireAuth, (req, res) => {
+app.post('/api/topup/request', requireAuth, async (req, res) => {
   const { packageId } = req.body || {};
   const pkg = PACKAGES.find((p) => p.id === packageId);
   if (!pkg) return res.status(400).json({ error: 'ไม่พบแพ็กเกจนี้' });
 
-  const user = findUser(req.user.sub);
-  if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
+  if (!PROMPTPAY_ID) {
+    return res.status(503).json({ error: 'ระบบยังไม่ได้ตั้งค่าบัญชีรับเงิน (PROMPTPAY_ID) กรุณาติดต่อแอดมิน' });
+  }
 
-  user.points += pkg.points;
-  res.json({ points: user.points, addedPoints: pkg.points });
+  const amount = nextUniqueAmount(pkg.price);
+  let qrDataUrl;
+  try {
+    qrDataUrl = await buildPromptPayQr(amount);
+  } catch (err) {
+    console.error('สร้าง QR PromptPay ไม่สำเร็จ:', err);
+    return res.status(500).json({ error: 'สร้าง QR ไม่สำเร็จ กรุณาลองใหม่' });
+  }
+
+  const topup = {
+    id: crypto.randomUUID(),
+    username: req.user.sub,
+    packageId: pkg.id,
+    points: pkg.points,
+    amount,
+    status: 'pending', // pending -> awaiting_review -> approved / rejected
+    slipImageBase64: null,
+    createdAt: Date.now(),
+    reviewedAt: null,
+    rejectReason: null,
+  };
+  pendingTopups.push(topup);
+
+  res.json({
+    topupId: topup.id,
+    amount: topup.amount,
+    points: topup.points,
+    qrDataUrl,
+    expiresInSec: 15 * 60, // แนะนำให้โอนภายใน 15 นาที ก่อนยอดนี้ถือว่าหมดอายุ (เช็กฝั่งหน้าเว็บ)
+  });
+});
+
+// ------------------------------------------------------------------
+// POST /api/topup/:id/slip — แนบสลิปโอนเงินสำหรับคำขอที่สร้างไว้
+// รับภาพเป็น base64 data URL (เช่น "data:image/png;base64,....")
+// ------------------------------------------------------------------
+app.post('/api/topup/:id/slip', requireAuth, (req, res) => {
+  const { imageBase64 } = req.body || {};
+  if (!imageBase64 || !imageBase64.startsWith('data:image/')) {
+    return res.status(400).json({ error: 'กรุณาแนบไฟล์รูปสลิปให้ถูกต้อง' });
+  }
+
+  const topup = pendingTopups.find((t) => t.id === req.params.id);
+  if (!topup) return res.status(404).json({ error: 'ไม่พบคำขอเติมพอยท์นี้' });
+  if (topup.username !== req.user.sub) return res.status(403).json({ error: 'ไม่มีสิทธิ์เข้าถึงคำขอนี้' });
+  if (topup.status !== 'pending') {
+    return res.status(400).json({ error: 'คำขอนี้แนบสลิปไปแล้ว หรือถูกตรวจสอบไปแล้ว' });
+  }
+
+  topup.slipImageBase64 = imageBase64;
+  topup.status = 'awaiting_review';
+  topup.slipUploadedAt = Date.now();
+
+  res.json({ ok: true, status: topup.status });
+});
+
+// ------------------------------------------------------------------
+// GET /api/my/topups — ประวัติ/สถานะคำขอเติมพอยท์ของผู้ใช้คนนี้ (ล่าสุดก่อน)
+// ------------------------------------------------------------------
+app.get('/api/my/topups', requireAuth, (req, res) => {
+  const list = pendingTopups
+    .filter((t) => t.username === req.user.sub)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map(({ id, packageId, points, amount, status, createdAt, rejectReason }) => ({
+      id, packageId, points, amount, status, createdAt, rejectReason,
+    }));
+  res.json(list);
+});
+
+// ------------------------------------------------------------------
+// GET /api/admin/topups — รายการคำขอเติมพอยท์ทั้งหมด (แอดมินเท่านั้น)
+// ค่าเริ่มต้นกรองเฉพาะที่ "แนบสลิปแล้ว รอตรวจสอบ" ใส่ ?status=all เพื่อดูทุกสถานะ
+// ------------------------------------------------------------------
+app.get('/api/admin/topups', requireAuth, requireAdmin, (req, res) => {
+  const statusFilter = req.query.status;
+  let list = pendingTopups.slice().sort((a, b) => b.createdAt - a.createdAt);
+  if (statusFilter !== 'all') {
+    list = list.filter((t) => t.status === (statusFilter || 'awaiting_review'));
+  }
+  res.json(list);
+});
+
+// ------------------------------------------------------------------
+// POST /api/admin/topups/:id/approve — อนุมัติคำขอ เพิ่มพอยท์ให้ผู้ใช้จริง
+// ------------------------------------------------------------------
+app.post('/api/admin/topups/:id/approve', requireAuth, requireAdmin, (req, res) => {
+  const topup = pendingTopups.find((t) => t.id === req.params.id);
+  if (!topup) return res.status(404).json({ error: 'ไม่พบคำขอนี้' });
+  if (topup.status !== 'awaiting_review') {
+    return res.status(400).json({ error: 'คำขอนี้ไม่ได้อยู่ในสถานะรอตรวจสอบ' });
+  }
+
+  const user = findUser(topup.username);
+  if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้เจ้าของคำขอนี้' });
+
+  user.points += topup.points;
+  topup.status = 'approved';
+  topup.reviewedAt = Date.now();
+  topup.reviewedBy = req.user.sub;
+
+  res.json({ ok: true, username: user.username, newPoints: user.points });
+});
+
+// ------------------------------------------------------------------
+// POST /api/admin/topups/:id/reject — ปฏิเสธคำขอ (เช่น สลิปปลอม/ยอดไม่ตรง)
+// ------------------------------------------------------------------
+app.post('/api/admin/topups/:id/reject', requireAuth, requireAdmin, (req, res) => {
+  const { reason } = req.body || {};
+  const topup = pendingTopups.find((t) => t.id === req.params.id);
+  if (!topup) return res.status(404).json({ error: 'ไม่พบคำขอนี้' });
+  if (topup.status !== 'awaiting_review') {
+    return res.status(400).json({ error: 'คำขอนี้ไม่ได้อยู่ในสถานะรอตรวจสอบ' });
+  }
+
+  topup.status = 'rejected';
+  topup.reviewedAt = Date.now();
+  topup.reviewedBy = req.user.sub;
+  topup.rejectReason = reason || 'ไม่ระบุเหตุผล';
+
+  res.json({ ok: true });
 });
 
 // ------------------------------------------------------------------
