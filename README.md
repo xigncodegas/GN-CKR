@@ -66,6 +66,9 @@ GitHub ใช้เก็บโค้ดอย่างเดียว ส่ว
    - `ADMIN_PASSWORD_HASH`
    - `JWT_SECRET`
    - `JWT_EXPIRES_IN` (เช่น `2h`)
+   - `CLIENT_ACCESS_EXPIRES_IN` (เช่น `15m`)
+   - `CLIENT_REFRESH_DAYS` (เช่น `30`)
+   - `CORS_ORIGINS` (รายการ origin คั่นด้วย comma; ถ้าไม่ใส่จะไม่อนุญาต cross-origin)
    - `PROMPTPAY_ID` (เบอร์โทรศัพท์ที่ผูก PromptPay ไว้รับเงินจริง เช่น `0812345678`)
 5. กด **Deploy** — รอสักครู่ Render จะให้โดเมนมา เช่น `https://aurora-hub.onrender.com`
    เปิดโดเมนนั้นได้เลย ทุกอย่าง (login, dashboard, เติมพอยท์, เช่าโปรแกรม) ทำงานจริงบนโดเมนนี้
@@ -100,6 +103,8 @@ Flow ตอนนี้เป็นแบบนี้:
 |--------|------------------|:---:|---|
 | POST   | `/api/register`  | ❌ | สมัครสมาชิก รับ `{ username, password }` สร้างบัญชี `member` และพอยท์เริ่มต้น 0 |
 | POST   | `/api/login`     | ❌ | ล็อกอิน รับ `{ username, password }` คืน `{ token, user }` |
+| POST   | `/api/client/login` | ❌ | Desktop login คืน access token อายุสั้นและ refresh token |
+| POST   | `/api/client/refresh` | ❌ | หมุนเวียน refresh token และคืน access token ใหม่ |
 | POST   | `/api/password-reset-requests` | ❌ | ส่งคำขอลืมรหัสผ่าน รับ `{ username, contact }` |
 | GET    | `/api/me`        | ✅ | ข้อมูลผู้ใช้ปัจจุบัน + พอยท์ล่าสุด |
 | GET    | `/api/packages`  | ✅ | รายการแพ็กเกจเติมพอยท์ |
@@ -108,6 +113,9 @@ Flow ตอนนี้เป็นแบบนี้:
 | GET    | `/api/my/topups` | ✅ | ประวัติ/สถานะคำขอเติมพอยท์ของตัวเอง |
 | GET    | `/api/services`  | ✅ | รายการโปรแกรมช่วยเล่น พร้อมสถานะการเช่าของผู้ใช้ |
 | POST   | `/api/rent`      | ✅ | เช่าโปรแกรมด้วย `{ serviceId }` หักพอยท์อัตโนมัติ |
+| POST   | `/api/client/slots/claim` | ✅ (client) | ขอ slot โดยใช้ client access token |
+| POST   | `/api/client/slots/heartbeat` | ✅ (client) | ต่ออายุ lease ทุก 60 วินาที (lease หมดอายุเมื่อขาดเกิน 2 นาที) |
+| POST   | `/api/client/slots/release` | ✅ (client) | คืน slot |
 | POST   | `/api/rent`      | ✅ | ซื้อบริการถาวรด้วย `{ serviceId: "svc-c" }` หักพอยท์ครั้งเดียวและบันทึก entitlement ใน PostgreSQL |
 | GET    | `/api/admin/topups` | ✅ (admin) | รายการคำขอเติมพอยท์ที่รอตรวจสอบ (`?status=all` ดูทุกสถานะ) |
 | GET    | `/api/admin/password-reset-requests` | ✅ (admin) | ดูคำขอลืมรหัสผ่านทั้งหมด |

@@ -7,14 +7,19 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const { Pool } = require('pg');
 const generatePromptPayPayload = require('promptpay-qr');
 const QRCode = require('qrcode');
 
 const app = express();
+app.use(helmet());
 // จำกัดขนาด body ไว้ที่ 6mb เพราะสลิปโอนเงินที่ผู้ใช้แนบมาจะถูกส่งมาเป็น base64 ใน JSON
 app.use(express.json({ limit: '6mb' }));
-app.use(cors()); // ปรับ origin ให้เจาะจงโดเมนจริงก่อนใช้งานจริง (เช่น { origin: 'https://yoursite.com' })
+const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
+app.use(cors({
+  origin: corsOrigins.length ? corsOrigins : false,
+}));
 
 // ------------------------------------------------------------------
 // เสิร์ฟหน้าเว็บ (index.html, dashboard.html, assets/*) จากเซิร์ฟเวอร์
@@ -26,6 +31,8 @@ app.use(express.static(path.join(__dirname)));
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
+const CLIENT_ACCESS_EXPIRES_IN = process.env.CLIENT_ACCESS_EXPIRES_IN || '15m';
+const CLIENT_REFRESH_DAYS = Number(process.env.CLIENT_REFRESH_DAYS || 30);
 const DATABASE_URL = process.env.DATABASE_URL;
 
 // ตรวจสอบตอนสตาร์ทว่าตั้งค่า .env ครบหรือยัง
@@ -87,6 +94,74 @@ async function initializeDatabase() {
       UNIQUE (user_id, entitlement_key)
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS entitlements (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entitlement_key VARCHAR(100) NOT NULL,
+      plan VARCHAR(30) NOT NULL,
+      starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ,
+      max_devices INTEGER NOT NULL DEFAULT 1 CHECK (max_devices > 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, entitlement_key, plan)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS client_sessions (
+      id UUID PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      refresh_token_hash CHAR(64) NOT NULL UNIQUE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ,
+      replaced_by UUID,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS active_leases (
+      id UUID PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entitlement_key VARCHAR(100) NOT NULL,
+      client_session_id UUID NOT NULL REFERENCES client_sessions(id) ON DELETE CASCADE,
+      lease_token_hash CHAR(64) NOT NULL UNIQUE,
+      last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      action VARCHAR(80) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+    SELECT id, 'cookie-run-farm-vip',
+      CASE WHEN rentals->>'cookie-run-farm-vip-plan' = '30d' THEN '30d' ELSE '24h' END,
+      to_timestamp((rentals->>'cookie-run-farm-vip')::double precision / 1000),
+      CASE WHEN rentals->>'cookie-run-farm-vip-plan' = '30d' THEN 5 ELSE 1 END
+    FROM users WHERE rentals ? 'cookie-run-farm-vip'
+    ON CONFLICT (user_id, entitlement_key, plan) DO UPDATE SET expires_at = GREATEST(entitlements.expires_at, EXCLUDED.expires_at), max_devices = EXCLUDED.max_devices
+  `);
+  await pool.query(`
+    INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+    SELECT id, 'suvip', 'suvip', to_timestamp((rentals->>'suvip')::double precision / 1000), 3
+    FROM users WHERE rentals ? 'suvip'
+    ON CONFLICT (user_id, entitlement_key, plan) DO UPDATE SET expires_at = GREATEST(entitlements.expires_at, EXCLUDED.expires_at)
+  `);
+  await pool.query(`
+    INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+    SELECT pe.user_id, pe.entitlement_key, 'permanent', NULL, 1
+    FROM permanent_entitlements pe
+    ON CONFLICT (user_id, entitlement_key, plan) DO NOTHING
+  `);
 
   if (process.env.ADMIN_PASSWORD_HASH) {
     await pool.query(
@@ -109,6 +184,41 @@ async function findUser(username) {
     [username]
   );
   return result.rows[0] || null;
+}
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+async function writeAudit(userId, action, metadata = {}) {
+  try {
+    await pool.query(
+      'INSERT INTO audit_logs (user_id, action, metadata) VALUES ($1, $2, $3::jsonb)',
+      [userId || null, action, JSON.stringify(metadata)]
+    );
+  } catch (err) {
+    console.error('บันทึก audit log ไม่สำเร็จ');
+  }
+}
+
+function signClientAccessToken(user, sessionId) {
+  return jwt.sign({ sub: user.username, role: user.role, sessionId, tokenType: 'client_access' }, JWT_SECRET, { expiresIn: CLIENT_ACCESS_EXPIRES_IN });
+}
+
+async function createClientSession(user) {
+  const sessionId = crypto.randomUUID();
+  const refreshToken = crypto.randomBytes(48).toString('base64url');
+  const expiresAt = new Date(Date.now() + CLIENT_REFRESH_DAYS * 24 * 60 * 60 * 1000);
+  await pool.query(
+    'INSERT INTO client_sessions (id, user_id, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4)',
+    [sessionId, user.id, hashToken(refreshToken), expiresAt]
+  );
+  return { sessionId, refreshToken, expiresAt };
+}
+
+async function getClientUser(req) {
+  const user = await findUser(req.user.sub);
+  return user;
 }
 
 // ------------------------------------------------------------------
@@ -179,6 +289,19 @@ function getCookieRunPlan(rentals) {
   return (rentals || {})['cookie-run-farm-vip-plan'] === '30d' ? '30d' : '24h';
 }
 
+async function getActiveCookieRunEntitlement(userId, client = pool) {
+  const result = await client.query(
+    `SELECT plan, expires_at AS "expiresAt", max_devices AS "maxDevices"
+     FROM entitlements
+     WHERE user_id = $1 AND entitlement_key = 'cookie-run-farm-vip'
+       AND (expires_at IS NULL OR expires_at > NOW())
+     ORDER BY CASE WHEN plan = '30d' THEN 1 ELSE 0 END DESC, expires_at DESC NULLS LAST
+     LIMIT 1`,
+    [userId]
+  );
+  return result.rows[0] || null;
+}
+
 // ------------------------------------------------------------------
 // จำกัดจำนวนครั้งการพยายามล็อกอิน ป้องกันการเดารหัสผ่าน (brute force)
 // ------------------------------------------------------------------
@@ -189,6 +312,9 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'พยายามเข้าสู่ระบบบ่อยเกินไป กรุณาลองใหม่ภายหลัง' },
 });
+const clientLoginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'พยายามเข้าสู่ระบบบ่อยเกินไป' } });
+const clientRefreshLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'รีเฟรช token บ่อยเกินไป' } });
+const slotLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, message: { error: 'ส่งคำขอ slot บ่อยเกินไป' } });
 
 // ------------------------------------------------------------------
 // POST /api/register — สร้างบัญชีสมาชิกใน PostgreSQL
@@ -267,11 +393,55 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
+  await writeAudit(user.id, 'web_login');
 
   return res.json({
     token,
     user: { username: user.username, role: user.role, points: user.points },
   });
+});
+
+app.post('/api/client/login', clientLoginLimiter, async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  const user = await findUser(username);
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    await writeAudit(user?.id, 'client_login_failed');
+    return res.status(401).json({ error: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
+  }
+  const session = await createClientSession(user);
+  await writeAudit(user.id, 'client_login');
+  res.json({ accessToken: signClientAccessToken(user, session.sessionId), refreshToken: session.refreshToken, accessExpiresIn: CLIENT_ACCESS_EXPIRES_IN, refreshExpiresAt: session.expiresAt });
+});
+
+app.post('/api/client/refresh', clientRefreshLimiter, async (req, res) => {
+  const refreshToken = String(req.body?.refreshToken || '');
+  if (!refreshToken) return res.status(401).json({ error: 'ไม่พบ refresh token' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `SELECT cs.*, u.username, u.role, u.id AS user_id FROM client_sessions cs JOIN users u ON u.id = cs.user_id
+       WHERE cs.refresh_token_hash = $1 FOR UPDATE`, [hashToken(refreshToken)]
+    );
+    const session = result.rows[0];
+    if (!session || session.revoked_at || new Date(session.expires_at).getTime() <= Date.now()) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ error: 'refresh token ไม่ถูกต้องหรือหมดอายุ' });
+    }
+    const replacementId = crypto.randomUUID();
+    const replacementToken = crypto.randomBytes(48).toString('base64url');
+    const replacementExpiry = new Date(Date.now() + CLIENT_REFRESH_DAYS * 24 * 60 * 60 * 1000);
+    await client.query('UPDATE client_sessions SET revoked_at = NOW(), replaced_by = $1, last_used_at = NOW() WHERE id = $2', [replacementId, session.id]);
+    await client.query('INSERT INTO client_sessions (id, user_id, refresh_token_hash, expires_at) VALUES ($1, $2, $3, $4)', [replacementId, session.user_id, hashToken(replacementToken), replacementExpiry]);
+    await client.query('COMMIT');
+    const user = { username: session.username, role: session.role };
+    await writeAudit(session.user_id, 'client_refresh');
+    res.json({ accessToken: signClientAccessToken(user, replacementId), refreshToken: replacementToken, accessExpiresIn: CLIENT_ACCESS_EXPIRES_IN, refreshExpiresAt: replacementExpiry });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'refresh token ไม่สำเร็จ' });
+  } finally { client.release(); }
 });
 
 // ------------------------------------------------------------------
@@ -291,6 +461,13 @@ function requireAuth(req, res, next) {
   } catch (err) {
     return res.status(401).json({ error: 'token ไม่ถูกต้องหรือหมดอายุ' });
   }
+}
+
+function requireClientAuth(req, res, next) {
+  requireAuth(req, res, () => {
+    if (req.user?.tokenType !== 'client_access') return res.status(401).json({ error: 'ต้องใช้ client access token' });
+    next();
+  });
 }
 
 function requireAdmin(req, res, next) {
@@ -401,13 +578,21 @@ app.get('/api/license/cookie-run-farm-vip', requireAuth, async (req, res) => {
   try {
     const user = await findUser(req.user.sub);
     const serverTime = Date.now();
+    if (!user) return res.status(403).json({ authorized: false });
+    const entitlement = await getActiveCookieRunEntitlement(user.id);
     const rentals = user?.rentals || {};
-    const expiresAt = Number(rentals['cookie-run-farm-vip']) || null;
-    const membership = getMembership(rentals, serverTime);
+    const expiresAt = entitlement ? new Date(entitlement.expiresAt).getTime() : Number(rentals['cookie-run-farm-vip']) || null;
+    const suvipResult = await pool.query(
+      `SELECT expires_at AS "expiresAt" FROM entitlements
+       WHERE user_id = $1 AND entitlement_key = 'suvip' AND expires_at > NOW()
+       ORDER BY expires_at DESC LIMIT 1`, [user.id]
+    );
+    const suvipExpiresAt = suvipResult.rows[0] ? new Date(suvipResult.rows[0].expiresAt).getTime() : Number(rentals.suvip) || null;
+    const membership = getMembership({ suvip: suvipExpiresAt }, serverTime);
+    const plan = entitlement?.plan || getCookieRunPlan(rentals);
+    const membershipTier = membership.membershipTier === 'SUVIP' ? 'suvip' : 'standard';
+    const maxDevices = plan === '30d' ? 5 : membershipTier === 'suvip' ? 3 : 1;
     if (expiresAt && expiresAt > serverTime) {
-      const plan = getCookieRunPlan(rentals);
-      const membershipTier = membership.membershipTier === 'SUVIP' ? 'suvip' : 'standard';
-      const maxDevices = getCookieRunScreenLimit(rentals, membership.membershipTier);
       return res.json({
         authorized: true,
         plan,
@@ -423,6 +608,85 @@ app.get('/api/license/cookie-run-farm-vip', requireAuth, async (req, res) => {
   } catch (err) {
     return res.status(500).json({ authorized: false });
   }
+});
+
+async function getActiveLeaseCount(userId, entitlementKey, client = pool) {
+  const result = await client.query(
+    `SELECT COUNT(*)::integer AS count FROM active_leases
+     WHERE user_id = $1 AND entitlement_key = $2
+       AND expires_at > NOW() AND last_heartbeat_at > NOW() - INTERVAL '2 minutes'`,
+    [userId, entitlementKey]
+  );
+  return result.rows[0].count;
+}
+
+app.post('/api/client/slots/claim', slotLimiter, requireClientAuth, async (req, res) => {
+  const entitlementKey = String(req.body?.entitlementKey || 'cookie-run-farm-vip');
+  if (entitlementKey !== 'cookie-run-farm-vip') return res.status(400).json({ error: 'ไม่รองรับ entitlement นี้' });
+  const user = await getClientUser(req);
+  if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const entitlement = await getActiveCookieRunEntitlement(user.id, client);
+    if (!entitlement) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'ไม่มีสิทธิ์ CookieRun Farm VIP' }); }
+    const suvip = await client.query(
+      `SELECT 1 FROM entitlements WHERE user_id = $1 AND entitlement_key = 'suvip'
+       AND expires_at > NOW() LIMIT 1`, [user.id]
+    );
+    const maxDevices = entitlement.plan === '30d' ? 5 : suvip.rowCount ? 3 : 1;
+    await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+    const activeCount = await getActiveLeaseCount(user.id, entitlementKey, client);
+    if (activeCount >= maxDevices) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'จำนวนจอที่ใช้งานอยู่ครบแล้ว', maxDevices });
+    }
+    const leaseId = crypto.randomUUID();
+    const leaseToken = crypto.randomBytes(32).toString('base64url');
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000);
+    await client.query(
+      `INSERT INTO active_leases (id, user_id, entitlement_key, client_session_id, lease_token_hash, expires_at)
+       SELECT $1, $2, $3, id, $4, $5 FROM client_sessions
+       WHERE user_id = $2 AND id = $6 AND revoked_at IS NULL AND expires_at > NOW()`,
+      [leaseId, user.id, entitlementKey, hashToken(leaseToken), expiresAt, req.user.sessionId]
+    );
+    const inserted = await client.query('SELECT 1 FROM active_leases WHERE id = $1', [leaseId]);
+    if (!inserted.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ error: 'client session ไม่ถูกต้อง' });
+    }
+    await client.query('COMMIT');
+    await writeAudit(user.id, 'slot_claim', { entitlementKey });
+    res.status(201).json({ leaseId, leaseToken, expiresAt, maxDevices });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: 'ขอ slot ไม่สำเร็จ' });
+  } finally { client.release(); }
+});
+
+app.post('/api/client/slots/heartbeat', slotLimiter, requireClientAuth, async (req, res) => {
+  const leaseToken = String(req.body?.leaseToken || '');
+  const leaseId = String(req.body?.leaseId || '');
+  const result = await pool.query(
+    `UPDATE active_leases SET last_heartbeat_at = NOW(), expires_at = NOW() + INTERVAL '2 minutes'
+     WHERE id = $1 AND lease_token_hash = $2 AND user_id = (SELECT id FROM users WHERE username = $3)
+       AND expires_at > NOW() AND last_heartbeat_at > NOW() - INTERVAL '2 minutes'
+     RETURNING expires_at AS "expiresAt"`,
+    [leaseId, hashToken(leaseToken), req.user.sub]
+  );
+  if (!result.rowCount) return res.status(409).json({ error: 'lease ไม่ถูกต้องหรือหมดอายุ' });
+  res.json({ ok: true, expiresAt: result.rows[0].expiresAt });
+});
+
+app.post('/api/client/slots/release', slotLimiter, requireClientAuth, async (req, res) => {
+  const result = await pool.query(
+    `DELETE FROM active_leases WHERE id = $1 AND lease_token_hash = $2
+     AND user_id = (SELECT id FROM users WHERE username = $3) RETURNING user_id, entitlement_key`,
+    [String(req.body?.leaseId || ''), hashToken(String(req.body?.leaseToken || '')), req.user.sub]
+  );
+  if (!result.rowCount) return res.status(404).json({ error: 'ไม่พบ lease' });
+  await writeAudit(result.rows[0].user_id, 'slot_release', { entitlementKey: result.rows[0].entitlement_key });
+  res.json({ ok: true });
 });
 
 // ------------------------------------------------------------------
@@ -603,7 +867,13 @@ app.post('/api/rent', requireAuth, async (req, res) => {
         'INSERT INTO permanent_entitlements (user_id, entitlement_key) VALUES ($1, $2)',
         [user.id, svc.id]
       );
+      await client.query(
+        `INSERT INTO entitlements (user_id, entitlement_key, plan, max_devices)
+         VALUES ($1, $2, 'permanent', 1) ON CONFLICT (user_id, entitlement_key, plan) DO NOTHING`,
+        [user.id, svc.id]
+      );
       await client.query('COMMIT');
+      await writeAudit(user.id, 'entitlement_purchase', { entitlementKey: svc.id, plan: 'permanent' });
       return res.json({ points: updated.rows[0].points, serviceId: svc.id, owned: true, permanent: true });
     } catch (err) {
       await client.query('ROLLBACK');
@@ -645,7 +915,20 @@ app.post('/api/rent', requireAuth, async (req, res) => {
         `UPDATE users SET rentals = jsonb_set(rentals, '{suvip}', to_jsonb($1::bigint)) WHERE id = $2`,
         [expiresAt, user.id]
       );
+      await client.query(
+        `INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+         VALUES ($1, 'cookie-run-farm-vip', '30d', to_timestamp($2::double precision / 1000), 5)
+         ON CONFLICT (user_id, entitlement_key, plan) DO UPDATE SET expires_at = EXCLUDED.expires_at, max_devices = 5`,
+        [user.id, expiresAt]
+      );
+      await client.query(
+        `INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+         VALUES ($1, 'suvip', 'suvip', to_timestamp($2::double precision / 1000), 3)
+         ON CONFLICT (user_id, entitlement_key, plan) DO UPDATE SET expires_at = EXCLUDED.expires_at`,
+        [user.id, expiresAt]
+      );
       await client.query('COMMIT');
+      await writeAudit(user.id, 'entitlement_purchase', { entitlementKey: 'cookie-run-farm-vip', plan: '30d' });
       return res.json({
         points: updated.rows[0].points,
         serviceId: svc.id,
@@ -678,6 +961,18 @@ app.post('/api/rent', requireAuth, async (req, res) => {
     [svc.cost, `{${rentalKey}}`, newExpiry, req.user.sub]
   );
   if (!updated.rowCount) return res.status(400).json({ error: 'พอยท์ไม่เพียงพอ กรุณาเติมพอยท์ก่อน' });
+
+  if (rentalKey === 'suvip' || rentalKey === 'cookie-run-farm-vip') {
+    const plan = rentalKey === 'suvip' ? 'suvip' : '24h';
+    const maxDevices = rentalKey === 'suvip' ? 3 : 1;
+    await pool.query(
+      `INSERT INTO entitlements (user_id, entitlement_key, plan, expires_at, max_devices)
+       VALUES ((SELECT id FROM users WHERE username = $1), $2, $3, to_timestamp($4::double precision / 1000), $5)
+       ON CONFLICT (user_id, entitlement_key, plan) DO UPDATE SET expires_at = EXCLUDED.expires_at`,
+      [req.user.sub, rentalKey, plan, newExpiry, maxDevices]
+    );
+  }
+  await writeAudit(user.id, 'entitlement_purchase', { entitlementKey: rentalKey, plan: rentalKey === 'suvip' ? 'suvip' : '24h' });
 
   res.json({
     points: updated.rows[0].points,
