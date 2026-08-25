@@ -108,6 +108,7 @@ Flow ตอนนี้เป็นแบบนี้:
 | GET    | `/api/my/topups` | ✅ | ประวัติ/สถานะคำขอเติมพอยท์ของตัวเอง |
 | GET    | `/api/services`  | ✅ | รายการโปรแกรมช่วยเล่น พร้อมสถานะการเช่าของผู้ใช้ |
 | POST   | `/api/rent`      | ✅ | เช่าโปรแกรมด้วย `{ serviceId }` หักพอยท์อัตโนมัติ |
+| POST   | `/api/rent`      | ✅ | ซื้อบริการถาวรด้วย `{ serviceId: "svc-c" }` หักพอยท์ครั้งเดียวและบันทึก entitlement ใน PostgreSQL |
 | GET    | `/api/admin/topups` | ✅ (admin) | รายการคำขอเติมพอยท์ที่รอตรวจสอบ (`?status=all` ดูทุกสถานะ) |
 | GET    | `/api/admin/password-reset-requests` | ✅ (admin) | ดูคำขอลืมรหัสผ่านทั้งหมด |
 | POST   | `/api/admin/password-reset-requests/:id/acknowledge` | ✅ (admin) | กดรับเรื่องคำขอลืมรหัสผ่าน |

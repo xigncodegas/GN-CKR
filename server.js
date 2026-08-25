@@ -78,6 +78,15 @@ async function initializeDatabase() {
       acknowledged_by VARCHAR(64)
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS permanent_entitlements (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entitlement_key VARCHAR(100) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_id, entitlement_key)
+    )
+  `);
 
   if (process.env.ADMIN_PASSWORD_HASH) {
     await pool.query(
@@ -91,7 +100,12 @@ async function initializeDatabase() {
 
 async function findUser(username) {
   const result = await pool.query(
-    'SELECT username, password_hash AS "passwordHash", role, points, rentals FROM users WHERE username = $1',
+    `SELECT u.username, u.id, u.password_hash AS "passwordHash", u.role, u.points, u.rentals,
+            EXISTS (
+              SELECT 1 FROM permanent_entitlements pe
+              WHERE pe.user_id = u.id AND pe.entitlement_key = 'svc-c'
+            ) AS "permanentProgramOwned"
+     FROM users u WHERE u.username = $1`,
     [username]
   );
   return result.rows[0] || null;
@@ -136,7 +150,7 @@ async function buildPromptPayQr(amount) {
 const SERVICES = [
   { id: 'cookie-run-farm-vip', name: 'CookieRun Farm VIP', icon: '🚀', description: 'เครื่องมือช่วยเพิ่มความสะดวกระหว่างเล่น รองรับการตั้งค่าพื้นฐาน', cost: 20, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
   { id: 'svc-b', name: 'เช่ายศ SUVIP', icon: '🛰️', description: 'ยศ SUVIP สำหรับเพิ่มสิทธิ์การใช้งาน CookieRun Farm VIP', cost: 35, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: true },
-  { id: 'svc-c', name: 'โปรแกรมช่วยเล่น C', icon: '🧠', description: 'ฟีเจอร์ขั้นสูง กำลังอยู่ระหว่างปรับปรุงระบบ', cost: 50, durationMs: 24 * 60 * 60 * 1000, durationLabel: '24 ชม.', available: false },
+  { id: 'svc-c', name: 'ซื้อโปรแกรมช่วยเล่นถาวร', icon: '🧠', description: 'ซื้อครั้งเดียว ใช้งานได้ถาวรตลอดอายุบัญชี', cost: 3000, permanent: true, available: true },
   { id: 'svc-vip', name: 'แพ็กเกจสมาชิก VIP', icon: '🎯', description: 'ปลดล็อกสิทธิพิเศษและบริการทั้งหมดในที่เดียว', cost: 80, durationMs: 7 * 24 * 60 * 60 * 1000, durationLabel: '7 วัน', available: true },
 ];
 
@@ -354,6 +368,7 @@ app.get('/api/services', requireAuth, async (req, res) => {
 
   const now = Date.now();
   const list = SERVICES.map((svc) => {
+    const owned = svc.id === 'svc-c' && user.permanentProgramOwned;
     const rentalKey = svc.id === 'svc-b' ? 'suvip' : svc.id;
     const expiresAt = (user.rentals || {})[rentalKey];
     const rented = expiresAt && expiresAt > now;
@@ -365,8 +380,10 @@ app.get('/api/services', requireAuth, async (req, res) => {
       cost: svc.cost,
       durationLabel: svc.durationLabel,
       available: svc.available,
+      permanent: !!svc.permanent,
+      owned: !!owned,
       rented: !!rented,
-      expiresAt: expiresAt || null,
+      expiresAt: svc.permanent ? null : (expiresAt || null),
       remainingLabel: rented ? formatRemaining(expiresAt - now) : null,
     };
   });
@@ -547,6 +564,44 @@ app.post('/api/rent', requireAuth, async (req, res) => {
 
   const user = await findUser(req.user.sub);
   if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
+
+  if (svc.permanent) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+      const owned = await client.query(
+        `SELECT 1 FROM permanent_entitlements
+         WHERE user_id = $1 AND entitlement_key = $2 FOR UPDATE`,
+        [user.id, svc.id]
+      );
+      if (owned.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'คุณมีสิทธิ์โปรแกรมนี้อยู่แล้ว', owned: true, permanent: true });
+      }
+      const updated = await client.query(
+        `UPDATE users SET points = points - $1
+         WHERE id = $2 AND points >= $1 RETURNING points`,
+        [svc.cost, user.id]
+      );
+      if (!updated.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'พอยท์ไม่เพียงพอ กรุณาเติมพอยท์ก่อน' });
+      }
+      await client.query(
+        'INSERT INTO permanent_entitlements (user_id, entitlement_key) VALUES ($1, $2)',
+        [user.id, svc.id]
+      );
+      await client.query('COMMIT');
+      return res.json({ points: updated.rows[0].points, serviceId: svc.id, owned: true, permanent: true });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error('ซื้อโปรแกรมถาวรไม่สำเร็จ:', err);
+      return res.status(500).json({ error: 'ซื้อโปรแกรมไม่สำเร็จ กรุณาลองใหม่' });
+    } finally {
+      client.release();
+    }
+  }
 
   if (user.points < svc.cost) {
     return res.status(400).json({ error: 'พอยท์ไม่เพียงพอ กรุณาเติมพอยท์ก่อน' });

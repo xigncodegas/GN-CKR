@@ -433,12 +433,18 @@
       services.forEach(svc => {
         const el = document.createElement('div');
         el.className = 'svc-card';
-        const badge = !svc.available
+        const badge = svc.owned
+          ? '<span class="badge rented">เป็นเจ้าของแล้ว · ใช้งานถาวร</span>'
+          : !svc.available
           ? '<span class="badge soon">เร็ว ๆ นี้</span>'
           : svc.rented
             ? `<span class="badge rented">เช่าอยู่ · เหลือ ${svc.remainingLabel}</span>`
             : '<span class="badge on">พร้อมเช่า</span>';
-        const btnLabel = !svc.available ? 'ยังไม่เปิดใช้' : svc.rented ? 'ต่ออายุ' : `เช่าเลย (${svc.cost} PT / ${svc.durationLabel})`;
+        const btnLabel = svc.owned
+          ? 'เป็นเจ้าของแล้ว · ใช้งานถาวร'
+          : !svc.available ? 'ยังไม่เปิดใช้' : svc.rented ? 'ต่ออายุ' : svc.permanent
+            ? `ซื้อเลย (${svc.cost.toLocaleString()} PT)`
+            : `เช่าเลย (${svc.cost} PT / ${svc.durationLabel})`;
 
         el.innerHTML = `
           <div class="svc-top">
@@ -446,9 +452,9 @@
             <div><div class="svc-name">${svc.name}</div></div>
           </div>
           <div class="svc-desc">${svc.description}</div>
-          <div class="svc-foot">${badge}<button type="button" ${!svc.available ? 'disabled' : ''}>${btnLabel}</button></div>`;
+          <div class="svc-foot">${badge}<button type="button" ${!svc.available || svc.owned ? 'disabled' : ''}>${btnLabel}</button></div>`;
 
-        if (svc.available) {
+        if (svc.available && !svc.owned) {
           el.querySelector('button').addEventListener('click', () => rentService(svc.id, el.querySelector('button')));
         }
         grid.appendChild(el);
@@ -466,7 +472,7 @@
         body: JSON.stringify({ serviceId }),
       });
       const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'เช่าโปรแกรมไม่สำเร็จ'); btn.disabled = false; btn.textContent = original; return; }
+      if (!res.ok) { showToast(data.error || 'ทำรายการไม่สำเร็จ'); btn.disabled = false; btn.textContent = original; return; }
       currentUser.points = data.points;
       if (data.membershipTier) {
         currentUser.membershipTier = data.membershipTier;
