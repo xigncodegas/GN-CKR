@@ -16,7 +16,8 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "jsonwebtoken": "^9.0.2",
-    "promptpay-qr": "^0.5.1",
+    "pg": "^8.23.0",
+    "promptpay-qr": "^0.5.0",
     "qrcode": "^1.5.4"
   }
 }

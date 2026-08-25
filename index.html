@@ -39,13 +39,41 @@
       </div>
       <div class="row-between">
         <label><input type="checkbox"> จดจำฉันไว้</label>
-        <a href="#" class="link-muted">ลืมรหัสผ่าน?</a>
+        <a href="#" class="link-muted" id="forgot-link">ลืมรหัสผ่าน?</a>
       </div>
       <button type="submit" class="btn-primary" id="login-btn">เข้าสู่ระบบ</button>
     </form>
 
     <button id="btn-contact-admin" class="btn-ghost">💬 ติดต่อแอดมิน</button>
-    <p class="fine-print">ยังไม่มีบัญชี? <a href="#">สมัครสมาชิกใหม่</a></p>
+    <p class="fine-print">ยังไม่มีบัญชี? <a href="#" id="register-link">สมัครสมาชิกใหม่</a></p>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-register">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-register')">✕</button>
+    <h3>สมัครสมาชิกใหม่</h3>
+    <p class="modal-sub">สร้างบัญชีสมาชิกเพื่อเริ่มใช้งานบริการ</p>
+    <form id="register-form">
+      <div class="field"><label for="register-username">ชื่อผู้ใช้</label><input id="register-username" required autocomplete="username"></div>
+      <div class="field"><label for="register-password">รหัสผ่าน</label><input type="password" id="register-password" required minlength="8" autocomplete="new-password"></div>
+      <p id="register-error" class="form-error"></p>
+      <button class="btn-primary" type="submit" id="register-btn">สมัครสมาชิก</button>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-forgot">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal('modal-forgot')">✕</button>
+    <h3>ลืมรหัสผ่าน</h3>
+    <p class="modal-sub">กรอกข้อมูลให้แอดมินติดต่อกลับเพื่อดำเนินการ</p>
+    <form id="forgot-form">
+      <div class="field"><label for="forgot-username">ชื่อผู้ใช้</label><input id="forgot-username" required></div>
+      <div class="field"><label for="forgot-contact">ช่องทางติดต่อ</label><input id="forgot-contact" placeholder="เช่น Line ID, Discord หรืออีเมล" required maxlength="300"></div>
+      <p id="forgot-error" class="form-error"></p>
+      <button class="btn-primary" type="submit" id="forgot-btn">ส่งคำขอ</button>
+    </form>
   </div>
 </div>
 
@@ -86,6 +114,33 @@
   }
 
   document.getElementById('btn-contact-admin').addEventListener('click', () => openModal('modal-contact'));
+  document.getElementById('register-link').addEventListener('click', (e) => { e.preventDefault(); openModal('modal-register'); });
+  document.getElementById('forgot-link').addEventListener('click', (e) => { e.preventDefault(); openModal('modal-forgot'); });
+
+  async function submitSimpleForm(formId, url, buttonId, errorId, successMessage, payload) {
+    const btn = document.getElementById(buttonId);
+    const error = document.getElementById(errorId);
+    error.classList.remove('show');
+    btn.disabled = true;
+    try {
+      const res = await fetch(API_BASE_URL + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload()) });
+      const data = await res.json();
+      if (!res.ok) { error.textContent = data.error || 'ทำรายการไม่สำเร็จ'; error.classList.add('show'); return; }
+      document.getElementById(formId).reset();
+      closeModal(formId === 'register-form' ? 'modal-register' : 'modal-forgot');
+      showToast(successMessage);
+    } catch (err) { error.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้'; error.classList.add('show'); }
+    finally { btn.disabled = false; }
+  }
+
+  document.getElementById('register-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitSimpleForm('register-form', '/api/register', 'register-btn', 'register-error', 'สมัครสมาชิกสำเร็จ เข้าสู่ระบบได้เลย', () => ({ username: document.getElementById('register-username').value.trim(), password: document.getElementById('register-password').value }));
+  });
+  document.getElementById('forgot-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitSimpleForm('forgot-form', '/api/password-reset-requests', 'forgot-btn', 'forgot-error', 'ส่งคำขอแล้ว รอแอดมินติดต่อกลับ', () => ({ username: document.getElementById('forgot-username').value.trim(), contact: document.getElementById('forgot-contact').value.trim() }));
+  });
 
   function sendMessage() {
     const ta = document.getElementById('contact-message');

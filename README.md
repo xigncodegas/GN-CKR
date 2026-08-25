@@ -35,6 +35,7 @@ npm run hash-password -- "รหัสผ่านของคุณ"
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 # คัดลอกไปวางใน .env -> JWT_SECRET
 
+# ใส่ DATABASE_URL ของ PostgreSQL ที่ Render ตั้งไว้ใน Environment
 # ใส่เบอร์โทรศัพท์ที่ผูก PromptPay ไว้รับเงินจริงใน .env -> PROMPTPAY_ID
 # (ไม่ใส่ก็ได้ตอนทดสอบ แต่ระบบเติมพอยท์จะสร้าง QR ไม่ได้จนกว่าจะใส่ค่านี้)
 
@@ -60,6 +61,7 @@ GitHub ใช้เก็บโค้ดอย่างเดียว ส่ว
    - **Build Command:** `npm install`
    - **Start Command:** `npm start`
 4. ไปที่แท็บ **Environment** ใส่ตัวแปรเหล่านี้ (ค่าเดียวกับที่ตั้งใน `.env` ตอนทดสอบในเครื่อง):
+   - `DATABASE_URL` (ค่า Internal Database URL จาก PostgreSQL service บน Render)
    - `ADMIN_USERNAME`
    - `ADMIN_PASSWORD_HASH`
    - `JWT_SECRET`
@@ -96,7 +98,9 @@ Flow ตอนนี้เป็นแบบนี้:
 
 | Method | Path             | ต้องล็อกอิน | คำอธิบาย |
 |--------|------------------|:---:|---|
+| POST   | `/api/register`  | ❌ | สมัครสมาชิก รับ `{ username, password }` สร้างบัญชี `member` และพอยท์เริ่มต้น 0 |
 | POST   | `/api/login`     | ❌ | ล็อกอิน รับ `{ username, password }` คืน `{ token, user }` |
+| POST   | `/api/password-reset-requests` | ❌ | ส่งคำขอลืมรหัสผ่าน รับ `{ username, contact }` |
 | GET    | `/api/me`        | ✅ | ข้อมูลผู้ใช้ปัจจุบัน + พอยท์ล่าสุด |
 | GET    | `/api/packages`  | ✅ | รายการแพ็กเกจเติมพอยท์ |
 | POST   | `/api/topup/request` | ✅ | สร้างคำขอเติมพอยท์ + QR PromptPay ตาม `{ packageId }` |
@@ -105,17 +109,18 @@ Flow ตอนนี้เป็นแบบนี้:
 | GET    | `/api/services`  | ✅ | รายการโปรแกรมช่วยเล่น พร้อมสถานะการเช่าของผู้ใช้ |
 | POST   | `/api/rent`      | ✅ | เช่าโปรแกรมด้วย `{ serviceId }` หักพอยท์อัตโนมัติ |
 | GET    | `/api/admin/topups` | ✅ (admin) | รายการคำขอเติมพอยท์ที่รอตรวจสอบ (`?status=all` ดูทุกสถานะ) |
+| GET    | `/api/admin/password-reset-requests` | ✅ (admin) | ดูคำขอลืมรหัสผ่านทั้งหมด |
+| POST   | `/api/admin/password-reset-requests/:id/acknowledge` | ✅ (admin) | กดรับเรื่องคำขอลืมรหัสผ่าน |
 | POST   | `/api/admin/topups/:id/approve` | ✅ (admin) | อนุมัติคำขอ เพิ่มพอยท์ให้ผู้ใช้จริง |
 | POST   | `/api/admin/topups/:id/reject`  | ✅ (admin) | ปฏิเสธคำขอ รับ `{ reason }` เสริมได้ |
 | GET    | `/api/admin/ping`| ✅ (admin เท่านั้น) | ตัวอย่าง route เฉพาะแอดมิน |
 
-## ข้อจำกัดที่ยังเหลืออยู่ (สำคัญมาก ต้องแก้ก่อนเปิดขายจริง)
+## หมายเหตุสำคัญก่อนเปิดขายจริง
 
-- **มีผู้ใช้ได้แค่คนเดียว (แอดมิน) และข้อมูลอยู่ใน RAM** — พอยท์/การเช่า/คำขอเติมพอยท์จะหายทุกครั้งที่
-  เซิร์ฟเวอร์รีสตาร์ทหรือ redeploy และตอนนี้ยังไม่มีระบบ "สมัครสมาชิกใหม่" ที่ใช้งานได้จริง
-  (ปุ่มในหน้า index.html ยังเป็นแค่ลิงก์เปล่า) — ถ้าจะขายให้ลูกค้าหลายคนต้องเพิ่ม:
-  1. ฐานข้อมูลจริง (PostgreSQL / MySQL / MongoDB) แทนอาเรย์ในหน่วยความจำ
-  2. หน้า/route สมัครสมาชิกที่สร้างผู้ใช้ใหม่ลงฐานข้อมูลจริง
+- `users` และ `password_reset_requests` ถูกสร้างอัตโนมัติเมื่อเซิร์ฟเวอร์เริ่ม และข้อมูลบัญชีสมาชิก,
+   พอยท์, การเช่า ถูกเก็บใน PostgreSQL
+- คำขอเติมพอยท์และสลิปยังเก็บใน RAM ตาม flow เดิม จึงควรเปลี่ยนไปใช้ object storage และตารางฐานข้อมูล
+   หากต้องการให้คำขอเหล่านี้อยู่รอดเมื่อ Render redeploy
 - **การตรวจสลิปยังเป็นแบบแอดมินเช็กเอง** ไม่มีการยืนยันกับธนาคาร/ผู้ให้บริการจริงว่าเงินเข้าแล้วจริง
   ต้องระวังสลิปปลอมหรือสลิปเก่าที่เอามาใช้ซ้ำ ก่อนกดอนุมัติทุกครั้ง
 - ตั้งค่า `cors()` ให้อนุญาตเฉพาะโดเมนจริงของคุณก่อนเปิดใช้งานสาธารณะ

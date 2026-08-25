@@ -7,6 +7,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const { Pool } = require('pg');
 const generatePromptPayPayload = require('promptpay-qr');
 const QRCode = require('qrcode');
 
@@ -25,10 +26,15 @@ app.use(express.static(path.join(__dirname)));
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
+const DATABASE_URL = process.env.DATABASE_URL;
 
 // ตรวจสอบตอนสตาร์ทว่าตั้งค่า .env ครบหรือยัง
 if (!JWT_SECRET) {
   console.error('❌ ไม่พบ JWT_SECRET ใน .env — กรุณาตั้งค่าก่อนรันเซิร์ฟเวอร์');
+  process.exit(1);
+}
+if (!DATABASE_URL) {
+  console.error('❌ ไม่พบ DATABASE_URL — กรุณาตั้งค่า PostgreSQL ใน Render ก่อนรันเซิร์ฟเวอร์');
   process.exit(1);
 }
 if (!process.env.ADMIN_PASSWORD_HASH) {
@@ -44,22 +50,51 @@ if (!PROMPTPAY_ID) {
   console.warn('⚠️ ไม่พบ PROMPTPAY_ID ใน .env — ระบบเติมพอยท์ผ่าน QR จะสร้าง QR ไม่ได้จนกว่าจะตั้งค่า');
 }
 
-// ------------------------------------------------------------------
-// ที่เก็บผู้ใช้แบบง่าย (ตัวอย่างสาธิต) — ระบบจริงควรใช้ฐานข้อมูล
-// เช่น PostgreSQL / MySQL / MongoDB แทนอาเรย์ในหน่วยความจำนี้
-// ------------------------------------------------------------------
-const users = [
-  {
-    username: process.env.ADMIN_USERNAME || 'GMGas',
-    passwordHash: process.env.ADMIN_PASSWORD_HASH,
-    role: 'admin',
-    points: 999999,
-    rentals: {}, // { [serviceId]: expiresAtMs }
-  },
-];
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+});
 
-function findUser(username) {
-  return users.find((u) => u.username === username);
+async function initializeDatabase() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGSERIAL PRIMARY KEY,
+      username VARCHAR(64) UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role VARCHAR(20) NOT NULL DEFAULT 'member',
+      points INTEGER NOT NULL DEFAULT 0 CHECK (points >= 0),
+      rentals JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_reset_requests (
+      id BIGSERIAL PRIMARY KEY,
+      username VARCHAR(64) NOT NULL,
+      contact TEXT NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      acknowledged_at TIMESTAMPTZ,
+      acknowledged_by VARCHAR(64)
+    )
+  `);
+
+  if (process.env.ADMIN_PASSWORD_HASH) {
+    await pool.query(
+      `INSERT INTO users (username, password_hash, role, points)
+       VALUES ($1, $2, 'admin', 999999)
+       ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin'`,
+      [process.env.ADMIN_USERNAME || 'GMGas', process.env.ADMIN_PASSWORD_HASH]
+    );
+  }
+}
+
+async function findUser(username) {
+  const result = await pool.query(
+    'SELECT username, password_hash AS "passwordHash", role, points, rentals FROM users WHERE username = $1',
+    [username]
+  );
+  return result.rows[0] || null;
 }
 
 // ------------------------------------------------------------------
@@ -123,6 +158,53 @@ const loginLimiter = rateLimit({
 });
 
 // ------------------------------------------------------------------
+// POST /api/register — สร้างบัญชีสมาชิกใน PostgreSQL
+// ------------------------------------------------------------------
+app.post('/api/register', async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  if (!/^[A-Za-z0-9_]{3,64}$/.test(username) || password.length < 8) {
+    return res.status(400).json({ error: 'ชื่อผู้ใช้ต้องมี 3-64 ตัวอักษร (a-z, 0-9, _) และรหัสผ่านอย่างน้อย 8 ตัวอักษร' });
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 12);
+    const result = await pool.query(
+      `INSERT INTO users (username, password_hash, role, points)
+       VALUES ($1, $2, 'member', 0)
+       RETURNING username, role, points`,
+      [username, passwordHash]
+    );
+    return res.status(201).json({ user: result.rows[0] });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'ชื่อผู้ใช้นี้มีอยู่แล้ว' });
+    console.error('สมัครสมาชิกไม่สำเร็จ:', err);
+    return res.status(500).json({ error: 'สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่' });
+  }
+});
+
+// ------------------------------------------------------------------
+// POST /api/password-reset-requests — ฝากคำขอให้แอดมินติดต่อกลับ
+// ------------------------------------------------------------------
+app.post('/api/password-reset-requests', async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const contact = String(req.body?.contact || '').trim();
+  if (!username || !contact || username.length > 64 || contact.length > 300) {
+    return res.status(400).json({ error: 'กรุณากรอกชื่อผู้ใช้และช่องทางติดต่อให้ครบถ้วน' });
+  }
+  try {
+    await pool.query(
+      'INSERT INTO password_reset_requests (username, contact) VALUES ($1, $2)',
+      [username, contact]
+    );
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error('บันทึกคำขอรีเซ็ตรหัสผ่านไม่สำเร็จ:', err);
+    return res.status(500).json({ error: 'ส่งคำขอไม่สำเร็จ กรุณาลองใหม่' });
+  }
+});
+
+// ------------------------------------------------------------------
 // POST /api/login
 // ------------------------------------------------------------------
 app.post('/api/login', loginLimiter, async (req, res) => {
@@ -132,7 +214,7 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     return res.status(400).json({ error: 'กรุณากรอกชื่อผู้ใช้และรหัสผ่าน' });
   }
 
-  const user = users.find((u) => u.username === username);
+  const user = await findUser(username);
 
   // สำคัญ: ใช้ข้อความ error เดียวกันไม่ว่าจะ "ไม่พบผู้ใช้" หรือ "รหัสผ่านผิด"
   // เพื่อไม่ให้ผู้โจมตีรู้ว่าชื่อผู้ใช้ไหนมีอยู่จริงในระบบ (user enumeration)
@@ -188,10 +270,14 @@ function requireAdmin(req, res, next) {
 // ------------------------------------------------------------------
 // GET /api/me — ตัวอย่าง route ที่ต้องล็อกอินก่อนถึงจะเข้าได้
 // ------------------------------------------------------------------
-app.get('/api/me', requireAuth, (req, res) => {
-  const user = users.find((u) => u.username === req.user.sub);
-  if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
-  res.json({ username: user.username, role: user.role, points: user.points });
+app.get('/api/me', requireAuth, async (req, res) => {
+  try {
+    const user = await findUser(req.user.sub);
+    if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
+    res.json({ username: user.username, role: user.role, points: user.points });
+  } catch (err) {
+    res.status(500).json({ error: 'อ่านข้อมูลผู้ใช้ไม่สำเร็จ' });
+  }
 });
 
 // ------------------------------------------------------------------
@@ -199,6 +285,33 @@ app.get('/api/me', requireAuth, (req, res) => {
 // ------------------------------------------------------------------
 app.get('/api/admin/ping', requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true, message: `สวัสดีแอดมิน ${req.user.sub}` });
+});
+
+app.get('/api/admin/password-reset-requests', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, username, contact, status, created_at AS "createdAt", acknowledged_at AS "acknowledgedAt", acknowledged_by AS "acknowledgedBy"
+       FROM password_reset_requests ORDER BY created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'อ่านคำขอรีเซ็ตรหัสผ่านไม่สำเร็จ' });
+  }
+});
+
+app.post('/api/admin/password-reset-requests/:id/acknowledge', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE password_reset_requests
+       SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $1
+       WHERE id = $2 AND status = 'pending' RETURNING id`,
+      [req.user.sub, req.params.id]
+    );
+    if (!result.rowCount) return res.status(400).json({ error: 'คำขอนี้ถูกรับเรื่องแล้วหรือไม่พบคำขอ' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'รับเรื่องไม่สำเร็จ' });
+  }
 });
 
 // ------------------------------------------------------------------
@@ -219,13 +332,13 @@ app.get('/api/promptpay-status', requireAuth, (req, res) => {
 // ------------------------------------------------------------------
 // GET /api/services — รายการโปรแกรมช่วยเล่น พร้อมสถานะการเช่าของผู้ใช้คนนี้
 // ------------------------------------------------------------------
-app.get('/api/services', requireAuth, (req, res) => {
-  const user = findUser(req.user.sub);
+app.get('/api/services', requireAuth, async (req, res) => {
+  const user = await findUser(req.user.sub);
   if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
 
   const now = Date.now();
   const list = SERVICES.map((svc) => {
-    const expiresAt = user.rentals[svc.id];
+    const expiresAt = (user.rentals || {})[svc.id];
     const rented = expiresAt && expiresAt > now;
     return {
       id: svc.id,
@@ -340,22 +453,26 @@ app.get('/api/admin/topups', requireAuth, requireAdmin, (req, res) => {
 // ------------------------------------------------------------------
 // POST /api/admin/topups/:id/approve — อนุมัติคำขอ เพิ่มพอยท์ให้ผู้ใช้จริง
 // ------------------------------------------------------------------
-app.post('/api/admin/topups/:id/approve', requireAuth, requireAdmin, (req, res) => {
+app.post('/api/admin/topups/:id/approve', requireAuth, requireAdmin, async (req, res) => {
   const topup = pendingTopups.find((t) => t.id === req.params.id);
   if (!topup) return res.status(404).json({ error: 'ไม่พบคำขอนี้' });
   if (topup.status !== 'awaiting_review') {
     return res.status(400).json({ error: 'คำขอนี้ไม่ได้อยู่ในสถานะรอตรวจสอบ' });
   }
 
-  const user = findUser(topup.username);
+  const user = await findUser(topup.username);
   if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้เจ้าของคำขอนี้' });
 
-  user.points += topup.points;
+  const updated = await pool.query(
+    'UPDATE users SET points = points + $1 WHERE username = $2 RETURNING username, points',
+    [topup.points, topup.username]
+  );
+  if (!updated.rowCount) return res.status(404).json({ error: 'ไม่พบผู้ใช้เจ้าของคำขอนี้' });
   topup.status = 'approved';
   topup.reviewedAt = Date.now();
   topup.reviewedBy = req.user.sub;
 
-  res.json({ ok: true, username: user.username, newPoints: user.points });
+  res.json({ ok: true, username: updated.rows[0].username, newPoints: updated.rows[0].points });
 });
 
 // ------------------------------------------------------------------
@@ -380,27 +497,32 @@ app.post('/api/admin/topups/:id/reject', requireAuth, requireAdmin, (req, res) =
 // ------------------------------------------------------------------
 // POST /api/rent — เช่าโปรแกรมช่วยเล่นด้วยพอยท์
 // ------------------------------------------------------------------
-app.post('/api/rent', requireAuth, (req, res) => {
+app.post('/api/rent', requireAuth, async (req, res) => {
   const { serviceId } = req.body || {};
   const svc = SERVICES.find((s) => s.id === serviceId);
   if (!svc) return res.status(400).json({ error: 'ไม่พบโปรแกรมนี้' });
   if (!svc.available) return res.status(400).json({ error: 'โปรแกรมนี้ยังไม่เปิดให้ใช้งาน' });
 
-  const user = findUser(req.user.sub);
+  const user = await findUser(req.user.sub);
   if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
 
   if (user.points < svc.cost) {
     return res.status(400).json({ error: 'พอยท์ไม่เพียงพอ กรุณาเติมพอยท์ก่อน' });
   }
 
-  user.points -= svc.cost;
+  const rentals = user.rentals || {};
   const now = Date.now();
-  const currentExpiry = user.rentals[svc.id] && user.rentals[svc.id] > now ? user.rentals[svc.id] : now;
+  const currentExpiry = rentals[svc.id] && rentals[svc.id] > now ? rentals[svc.id] : now;
   const newExpiry = currentExpiry + svc.durationMs;
-  user.rentals[svc.id] = newExpiry;
+  const updated = await pool.query(
+    `UPDATE users SET points = points - $1, rentals = jsonb_set(COALESCE(rentals, '{}'::jsonb), $2, to_jsonb($3::bigint))
+     WHERE username = $4 AND points >= $1 RETURNING points`,
+    [svc.cost, `{${svc.id}}`, newExpiry, req.user.sub]
+  );
+  if (!updated.rowCount) return res.status(400).json({ error: 'พอยท์ไม่เพียงพอ กรุณาเติมพอยท์ก่อน' });
 
   res.json({
-    points: user.points,
+    points: updated.rows[0].points,
     serviceId: svc.id,
     expiresAt: newExpiry,
     expiresLabel: new Date(newExpiry).toLocaleString('th-TH'),
@@ -416,6 +538,14 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Server (frontend + API) running at http://localhost:${PORT}`);
-});
+initializeDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`✅ Server (frontend + API) running at http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('❌ เชื่อมต่อ PostgreSQL หรือสร้างตารางไม่สำเร็จ');
+    console.error(err.message);
+    process.exit(1);
+  });
