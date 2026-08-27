@@ -247,6 +247,15 @@ form input:focus{ border-color:var(--border-hi); box-shadow:0 0 0 3px rgba(0,229
 .svc-card.service-expired{ border-color:rgba(255,61,129,0.3); }
 .svc-card.service-disabled{ opacity:.62; }
 
+/* ---------- PROGRAM VIDEO ---------- */
+.video-intro{ margin:0 0 16px; color:var(--text-dim); font-size:13.5px; }
+.video-card{ max-width:980px; overflow:hidden; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:0 18px 45px -30px rgba(0,0,0,.75); }
+.video-card-head{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:19px 20px 15px; }
+.video-card-head h3{ margin:4px 0 0; font:600 19px 'Kanit',sans-serif; }
+.program-video{ display:block; width:100%; max-height:560px; background:#050509; outline:none; }
+.video-card-foot{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 20px; color:var(--text-dim); font-size:12.5px; }
+.video-card-foot a{ color:var(--cyan); text-decoration:none; font:500 13px 'Kanit',sans-serif; }
+.video-card-foot a:hover{ text-decoration:underline; }
 /* ---------- MODAL ---------- */
 .modal-overlay{
   position:fixed; inset:0; background:rgba(4,4,8,0.72); backdrop-filter:blur(3px);

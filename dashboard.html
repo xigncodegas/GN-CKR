@@ -25,6 +25,7 @@
     <button class="nav-btn" data-panel="services"><span class="ic">🛒</span> ร้านบริการ</button>
     <button class="nav-btn" data-panel="entitlements"><span class="ic">🪪</span> สิทธิ์ของฉัน</button>
     <button class="nav-btn" data-panel="topup"><span class="ic">💎</span> เติมพอยท์</button>
+    <button class="nav-btn" data-panel="videos"><span class="ic">🎬</span> วิดีโอตัวอย่าง</button>
     <button class="nav-btn" id="nav-admin-topups" data-panel="admin-topups" style="display:none;"><span class="ic">🧾</span> ตรวจสอบการเติมพอยท์</button>
     <button class="nav-btn" id="nav-admin-resets" data-panel="admin-resets" style="display:none;"><span class="ic">🔑</span> คำขอลืมรหัสผ่าน</button>
     <button class="nav-btn" id="nav-admin-users" data-panel="admin-users" style="display:none;"><span class="ic">👥</span> จัดการสมาชิก</button>
@@ -88,7 +89,11 @@
           <div class="price">สอบถามหรือแจ้งปัญหา</div>
           <button type="button">ติดต่อแอดมิน</button>
         </div>
-      </div>
+        <div class="pkg-card" onclick="switchPanel('videos')">
+          <div class="pts" style="font-size:18px;">🎬 วิดีโอตัวอย่าง</div>
+          <div class="price">ดูการทำงานของโปรแกรมก่อนใช้งาน</div>
+          <button type="button">ดูวิดีโอ</button>
+        </div>      </div>
     </div>
 
     <!-- top up -->
@@ -113,6 +118,28 @@
       </div>
     </div>
 
+    <!-- videos -->
+    <div class="panel" id="panel-videos">
+      <div class="section-title"><span class="dash"></span>วิดีโอตัวอย่างโปรแกรม</div>
+      <p class="video-intro">ดูวิดีโอสาธิต CookieRun Farm VIP ก่อนเริ่มใช้งาน หากมีคำถามสามารถติดต่อแอดมินได้จากเมนูด้านซ้าย</p>
+      <article class="video-card">
+        <div class="video-card-head">
+          <div>
+            <span class="eyebrow">PROGRAM DEMO · EP.1</span>
+            <h3>วิธีใช้งาน CookieRun Farm VIP เบื้องต้น</h3>
+          </div>
+          <span class="badge on">รับชมได้</span>
+        </div>
+        <video class="program-video" controls preload="metadata" playsinline>
+          <source src="VDO/VDOEP1.mp4" type="video/mp4">
+          เบราว์เซอร์นี้ไม่รองรับการเล่นวิดีโอ กรุณาดาวน์โหลดหรือเปิดผ่านเบราว์เซอร์อื่น
+        </video>
+        <div class="video-card-foot">
+          <span>🎥 วิดีโอสาธิตการใช้งานจริง</span>
+          <a href="VDO/VDOEP1.mp4" target="_blank" rel="noopener">เปิดวิดีโอเต็มจอ ↗</a>
+        </div>
+      </article>
+    </div>
     <div class="panel" id="panel-entitlements">
       <div class="section-title"><span class="dash"></span>สิทธิ์ของฉัน</div>
       <div class="entitlement-summary">
