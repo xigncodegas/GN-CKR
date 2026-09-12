@@ -705,6 +705,23 @@ app.get('/api/license/cookie-run-farm-vip', requireAuth, async (req, res) => {
     const user = await findUser(req.user.sub);
     const serverTime = Date.now();
     if (!user) return res.status(403).json({ authorized: false });
+
+    // แอดมิน/GM: ได้สิทธิ์เต็มเสมอ ไม่ต้องมี entitlement/วันหมดอายุแยกต่างหาก
+    // (ยังต้อง login ด้วย username/password จริงผ่าน bcrypt ตามปกติ — จุดนี้แค่ข้าม
+    // การเช็ค entitlement/expiry ให้บัญชีที่ role เป็น 'admin' เท่านั้น)
+    if (user.role === 'admin') {
+      return res.json({
+        authorized: true,
+        plan: 'admin',
+        membershipTier: 'admin',
+        expiresAt: serverTime + 100 * 365 * 24 * 60 * 60 * 1000, // ~100 ปี (แทน "ไม่มีวันหมดอายุ")
+        suvipExpiresAt: null,
+        maxDevices: 999,
+        maxScreens: 999,
+        serverTime,
+      });
+    }
+
     const entitlement = await getActiveCookieRunEntitlement(user.id);
     const rentals = user?.rentals || {};
     const expiresAt = entitlement ? new Date(entitlement.expiresAt).getTime() : Number(rentals['cookie-run-farm-vip']) || null;
@@ -751,16 +768,23 @@ app.post('/api/client/slots/claim', slotLimiter, requireClientAuth, async (req, 
   if (entitlementKey !== 'cookie-run-farm-vip') return res.status(400).json({ error: 'ไม่รองรับ entitlement นี้' });
   const user = await getClientUser(req);
   if (!user) return res.status(404).json({ error: 'ไม่พบผู้ใช้' });
+  const isAdmin = user.role === 'admin';
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const entitlement = await getActiveCookieRunEntitlement(user.id, client);
-    if (!entitlement) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'ไม่มีสิทธิ์ CookieRun Farm VIP' }); }
-    const suvip = await client.query(
-      `SELECT 1 FROM entitlements WHERE user_id = $1 AND entitlement_key = 'suvip'
-       AND expires_at > NOW() LIMIT 1`, [user.id]
-    );
-    const maxDevices = entitlement.plan === '30d' ? 5 : suvip.rowCount ? 3 : 1;
+    let maxDevices;
+    if (isAdmin) {
+      // แอดมิน/GM: ไม่ต้องมี entitlement ก็ขอ slot ได้ และไม่จำกัดจำนวนจอ
+      maxDevices = 999;
+    } else {
+      const entitlement = await getActiveCookieRunEntitlement(user.id, client);
+      if (!entitlement) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'ไม่มีสิทธิ์ CookieRun Farm VIP' }); }
+      const suvip = await client.query(
+        `SELECT 1 FROM entitlements WHERE user_id = $1 AND entitlement_key = 'suvip'
+         AND expires_at > NOW() LIMIT 1`, [user.id]
+      );
+      maxDevices = entitlement.plan === '30d' ? 5 : suvip.rowCount ? 3 : 1;
+    }
     await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [user.id]);
     const activeCount = await getActiveLeaseCount(user.id, entitlementKey, client);
     if (activeCount >= maxDevices) {
