@@ -747,7 +747,7 @@ app.get('/api/license/cookie-run-farm-vip', requireAuth, async (req, res) => {
         serverTime,
       });
     }
-    return res.status(403).json({ authorized: false });
+    return res.status(403).json({ authorized: false, expiresAt });
   } catch (err) {
     return res.status(500).json({ authorized: false });
   }
